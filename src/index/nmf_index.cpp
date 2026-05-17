@@ -4,16 +4,18 @@
 #include <stdexcept>
 #include <iostream>
 #include <omp.h>
+#include <chrono>
+#include <queue>
+
 
 // ============================================================
 // Constructor
 // ============================================================
 
-NMFIndex::NMFIndex(const NMFModel::Config& nmf_cfg,
+NMFIndex::NMFIndex(const MiniBatchNMF::Config& nmf_cfg,
                    const Config& idx_cfg)
     : nmf_cfg_(nmf_cfg),
       cfg_(idx_cfg),
-      model_(nmf_cfg),
       X_docs_(nullptr) {}
 
 
@@ -22,74 +24,102 @@ NMFIndex::NMFIndex(const NMFModel::Config& nmf_cfg,
 // ============================================================
 
 void NMFIndex::build(const SparseMat& X) {
+    auto t0 = std::chrono::high_resolution_clock::now();
+
     if (cfg_.verbose) {
         std::cout << "NMFIndex::build()\n";
     }
     X_docs_ = &X;
-
-    // 1. Fit NMF
-    model_.fit(X);
-
-    const auto k = model_.k();
     n_docs_ = static_cast<int>(X.rows());
 
-    // 2. Project training data ONLY via XH^T
-    W_train_ = model_.project(X);   // (n × k), soft assignments
+    //TODO: Data is duplicated to X_fit! Change to reference
+    SparseMat X_fit;
+    if (X.rows() > cfg_.sample_size)
+    {
+        // Randomly sample rows without copying the entire matrix
+        std::vector<int> indices(X.rows());
+        std::iota(indices.begin(), indices.end(), 0);
 
-    // 3. Build inverted lists
-    lists_.assign(k, {});
-    build_lists(W_train_);
+        std::shuffle(indices.begin(), indices.end(),
+                     std::mt19937{std::random_device{}()});
+
+        indices.resize(cfg_.sample_size);
+
+        // Create sampled matrix
+        X_fit.resize(cfg_.sample_size, X.cols());
+
+        for (int i = 0; i < cfg_.sample_size; ++i) {
+            X_fit.row(i) = X.row(indices[i]);
+        }
+        compute_H(X_fit);
+    }
+    else {
+        compute_H(X);
+    }
+
+    // 2. Build inverted lists
+    build_lists(X);
 
     built_ = true;
 
+    auto t1 = std::chrono::high_resolution_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+
     if (cfg_.verbose) {
         std::cout << "Index built: n_docs=" << n_docs_
-                  << " k=" << k << "\n";
+                  << " k=" << H_.rows()
+                  << " | build time: " << ms << " ms\n";
     }
 }
 
 
-// ============================================================
-// build_lists()
-// ============================================================
 
-void NMFIndex::build_lists(const DenseMat& W) {
-    const int k = static_cast<int>(W.cols());
-    const int n = static_cast<int>(W.rows());
+void NMFIndex::compute_H(const SparseMat& X_fit)
+{
+    MiniBatchNMF nmf(nmf_cfg_);
+    nmf.fit_transform(X_fit);
+    H_ = nmf.components_;
+}
+
+void NMFIndex::build_lists(const SparseMat& X) {
+    std::cout << "NMFIndex::build_lists()\n";
+    const int n = static_cast<int>(X.rows());
+    const int k = static_cast<int>(H_.rows());
+    const int m = cfg_.m;
+
+    lists_.assign(k, {});
 
     #pragma omp parallel for schedule(dynamic)
-    for (int r = 0; r < k; ++r) {
+    for (int topic = 0; topic < k; ++topic) {
 
-        std::vector<ListEntry> tmp;
-        tmp.reserve(n);
+        const Eigen::VectorXf h = H_.row(topic).transpose();
 
+        // Min-heap capped at m entries — never grows beyond m
+        // Entry: (score, doc_id)
+        using Pair = std::pair<float, int>;
+        std::priority_queue<Pair, std::vector<Pair>, std::greater<Pair>> heap;
         for (int i = 0; i < n; ++i) {
-            float score = W(i, r);
-            if (score > 0.f) {
-                tmp.push_back({i, score});
+            float score = X.row(i).dot(h);
+            if (score <= 0.f) continue;
+
+            if (static_cast<int>(heap.size()) < m) {
+                heap.emplace(score, i);
+            } else if (score > heap.top().first) {
+                heap.pop();
+                heap.emplace(score, i);
             }
         }
 
-        // keep top-m
-        int m = cfg_.m;
-        if (tmp.size() > static_cast<size_t>(m)) {
-            std::nth_element(
-                tmp.begin(),
-                tmp.begin() + m,
-                tmp.end(),
-                [](const ListEntry& a, const ListEntry& b) {
-                    return a.score > b.score;
-                }
-            );
-            tmp.resize(m);
+        // Drain heap into sorted list (descending)
+        std::vector<ListEntry> tmp;
+        tmp.resize(heap.size());
+        int idx = static_cast<int>(heap.size()) - 1;
+        while (!heap.empty()) {
+            tmp[idx--] = {heap.top().second, heap.top().first};
+            heap.pop();
         }
 
-        std::sort(tmp.begin(), tmp.end(),
-                  [](const ListEntry& a, const ListEntry& b) {
-                      return a.score > b.score;
-                  });
-
-        lists_[r] = std::move(tmp);
+        lists_[topic] = std::move(tmp);
     }
 }
 
@@ -110,28 +140,31 @@ int NMFIndex::list_size(int r) const {
 // ============================================================
 
 std::vector<std::vector<NMFIndex::Result>>
-NMFIndex::search(const SparseMat& queries,
-                 int top_k,
-                 int nprobe) const
+NMFIndex::search(const SparseMat& queries, int top_k, int nprobe) const
 {
+    std::cout << "NMFIndex::search()\n";
     if (!built_)
         throw std::runtime_error("Index not built");
 
     if (nprobe < 0) nprobe = cfg_.nprobe;
 
     const int Q = static_cast<int>(queries.rows());
-
     std::vector<std::vector<Result>> results(Q);
 
+    const int CHUNK = 64; // tune based on available RAM
     #pragma omp parallel for schedule(dynamic)
-    for (int qi = 0; qi < Q; ++qi) {
-        Eigen::RowVectorXf x = Eigen::RowVectorXf::Zero(queries.cols());
+    for (int qi = 0; qi < Q; qi += CHUNK) {
+        const int end = std::min(qi + CHUNK, Q);
+        const int chunk_size = end - qi;
 
-        for (Eigen::SparseMatrix<float, Eigen::RowMajor>::InnerIterator it(queries, qi); it; ++it) {
-            x[it.col()] = it.value();
+        // Project only this chunk
+        DenseMat chunk_projected =
+            queries.middleRows(qi, chunk_size) * H_.transpose(); // (CHUNK × k)
+
+        for (int i = 0; i < chunk_size; ++i) {
+            Eigen::SparseVector<float, Eigen::RowMajor> query = queries.row(qi + i);
+            results[qi + i] = search_one(query, chunk_projected.row(i), top_k, nprobe);
         }
-
-        results[qi] = search_one(x, top_k, nprobe);
     }
 
     return results;
@@ -143,20 +176,13 @@ NMFIndex::search(const SparseMat& queries,
 // ============================================================
 
 std::vector<NMFIndex::Result>
-NMFIndex::search_one(Eigen::Ref<const Eigen::RowVectorXf> x,
-                     int top_k,
-                     int nprobe) const
+NMFIndex::search_one(
+                    const Eigen::SparseVector<float, Eigen::RowMajor>& query,
+                    const Eigen::RowVectorXf& query_scores,
+                    int top_k,
+                    int nprobe) const
 {
-    // ============================================================
-    // 1. Project query ONLY via xH^T
-    // ============================================================
-
-    NMFModel::DenseMat X(1, x.size());
-    X.row(0) = x;
-
-    Eigen::RowVectorXf w_q = model_.project(X).row(0);
-
-    const int k = static_cast<int>(w_q.size());
+    const int k = static_cast<int>(query_scores.size());
 
     // ============================================================
     // 2. Pick top-nprobe latent components
@@ -172,7 +198,7 @@ NMFIndex::search_one(Eigen::Ref<const Eigen::RowVectorXf> x,
         comps.begin() + probes,
         comps.end(),
         [&](int a, int b) {
-            return w_q[a] > w_q[b];
+            return query_scores[a] > query_scores[b];
         }
     );
 
@@ -221,7 +247,7 @@ NMFIndex::search_one(Eigen::Ref<const Eigen::RowVectorXf> x,
         // Sparse dot product:
         // iterate only over non-zeros of document row
         for (SparseMat::InnerIterator it(*X_docs_, doc); it; ++it) {
-            score += x[it.col()] * it.value();
+            score += query.coeff(it.col()) * it.value();
         }
 
         scored.push_back({doc, score});

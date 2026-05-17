@@ -1,23 +1,23 @@
 #pragma once
 
-#include "nmf.h"
+#include "../clustering/mini_batch_nmf.h"
 #include <vector>
 
 // =====================================================================
-// NMFIndex — Soft Inverted Index over NMF Components
+// NMFIndex — Soft Inverted Index over MiniBatchNMF Components
 // =====================================================================
 //
-// Builds an approximate nearest-neighbour index using NMF:
+// Builds an approximate nearest-neighbour index using MiniBatchNMF:
 //
 //   Build:
-//     1. Fit NMFModel to training data X  (n × vocab)
-//     2. Project train: W_train = max(X H^T, 0)  shape (n, k)
+//     1. Fit MiniBatchNMF to training data X  (n × vocab)
+//     2. Project train: W_train = model.transform(X)  shape (n, k)
 //     3. For each component r = 0..k-1, keep the top-m documents
 //        ranked by W_train[:,r] — the inverted list for component r.
 //        "Soft": one document can appear in several lists.
 //
 //   Search:
-//     1. Project query: w_q = max(q H^T, 0)  shape (1, k)
+//     1. Project query: w_q = model.transform(q)  shape (1, k)
 //     2. Rank all k lists by w_q[r]; probe the top-nprobe lists.
 //     3. Collect unique candidate doc_ids from those lists.
 //     4. Re-score each candidate: score = w_q · W_train[doc,:]
@@ -36,9 +36,9 @@
 //   search() — OMP parallel-for over queries; each query independent
 //
 // ── Usage ────────────────────────────────────────────────────────────
-//   NMFModel::Config nmf_cfg;
-//   nmf_cfg.k      = 512;
-//   nmf_cfg.solver = NMFModel::SolverType::SGD;
+//   MiniBatchNMF::Config nmf_cfg;
+//   nmf_cfg.n_components = 512;
+//   nmf_cfg.batch_size   = 1024;
 //
 //   NMFIndex::Config idx_cfg;
 //   idx_cfg.m      = 200;   // docs per list
@@ -52,34 +52,30 @@
 class NMFIndex {
 public:
     // ── Types ────────────────────────────────────────────────────────
-    using SparseMat = NMFModel::SparseMat;
-    using DenseMat  = NMFModel::DenseMat;
-
-    // Row-major matrix for W_train — keeps W_train_.row(i) contiguous.
-    using RowMat = Eigen::Matrix<float,
-                                  Eigen::Dynamic, Eigen::Dynamic,
-                                  Eigen::RowMajor>;
+    using SparseMat = SpMat;   // Eigen::SparseMatrix<float, RowMajor>
+    using DenseMat  = Mat;     // Eigen::MatrixXf
 
     // ── Configuration ────────────────────────────────────────────────
     struct Config {
         int  m       = 100;   // top-m docs stored per inverted list
         int  nprobe  = 8;     // default lists to probe at query time
+        int sample_size = 100000;
         bool verbose = true;
     };
 
     // ── Result ───────────────────────────────────────────────────────
     struct Result {
         int   doc_id;
-        float score;  // w_q · W_train[doc_id,:] in NMF projected space
+        float score;  // w_q · W_train[doc_id,:] in MiniBatchNMF projected space
     };
 
     // ── Construction ─────────────────────────────────────────────────
-    // nmf_cfg controls the inner NMFModel (k, solver, lr, …).
+    // nmf_cfg controls the inner MiniBatchNMF configuration.
     // idx_cfg controls index parameters (m, nprobe).
-    NMFIndex(const NMFModel::Config& nmf_cfg, const Config& idx_cfg);
+    NMFIndex(const MiniBatchNMF::Config& nmf_cfg, const Config& idx_cfg);
 
     // ── build() ──────────────────────────────────────────────────────
-    // Fits the NMF model on X, projects all training vectors, and
+    // Fits the MiniBatchNMF model on X, projects all training vectors, and
     // constructs the k inverted lists.  Safe to call multiple times
     // (model and lists are fully reset each time).
     void build(const SparseMat& X);
@@ -96,11 +92,10 @@ public:
         int              nprobe = -1) const;
 
     // ── Accessors ────────────────────────────────────────────────────
-    const NMFModel& model()         const { return model_; }
-    int             n_lists()       const { return model_.k(); }
-    int             n_docs()        const { return n_docs_; }
-    bool            is_built()      const { return built_; }
-    const Config&   index_config()  const { return cfg_; }
+    int                 n_lists()       const { return H_.rows(); }
+    int                 n_docs()        const { return n_docs_; }
+    bool                is_built()      const { return built_; }
+    const Config&       index_config()  const { return cfg_; }
 
     // Number of documents stored in list r (≤ cfg_.m).
     int list_size(int r) const;
@@ -112,23 +107,24 @@ private:
         float score;   // W_train[doc_id, r] — component projection weight
     };
 
-    NMFModel::Config                    nmf_cfg_;
+    MiniBatchNMF::Config                nmf_cfg_;
     Config                              cfg_;
-    NMFModel                            model_;
+
     const SparseMat*                    X_docs_;
+    Mat                                 H_;
+    int                                 n_docs_ = 0;
 
     std::vector<std::vector<ListEntry>> lists_;    // (k, ≤m) sorted desc
-    RowMat                              W_train_;  // (n_docs, k) row-major
-    int                                 n_docs_ = 0;
     bool                                built_  = false;
 
+    void compute_H(const SparseMat& X_fit);
     // Build all k inverted lists from projected training matrix W (n × k).
-    // W is passed column-major so W.col(r) reads are contiguous.
-    void build_lists(const DenseMat& W);
+    void build_lists(const SparseMat& X);
 
     // Score and rank candidates for one query vector w_q (size k).
     std::vector<Result> search_one(
-        Eigen::Ref<const Eigen::RowVectorXf> w_q,
+        const Eigen::SparseVector<float, Eigen::RowMajor>& query,
+        const Eigen::RowVectorXf& query_scores,
         int top_k,
         int nprobe) const;
 };

@@ -125,8 +125,9 @@ private:
     // Parallelism: OMP parallel-for over k components.
     template <typename MatType>
     void update_W_hals(DenseMat& W,
-                       const DenseMat& HHt,
-                       const DenseMat& XHt) const;
+                              const DenseMat& HHt,
+                              const DenseMat& XHt,
+                              int T) const;
 
     // ── HALS: H update ───────────────────────────────────────────────
     // H ← max(0, H + (W^T X - W^T W H) / diag(W^T W))
@@ -134,7 +135,8 @@ private:
     // Dense path:  BLAS dgemv per component, OMP-parallel over k.
     template <typename MatType>
     void update_H_hals(const DenseMat& WtW,
-                                  const DenseMat& WtX);
+                              const DenseMat& WtX,
+                              int T);
 
     // ── SGD: joint W+H Hogwild! update ───────────────────────────────
     // Iterates only over observed non-zeros; never materialises W H.
