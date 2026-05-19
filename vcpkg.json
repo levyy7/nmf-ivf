@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "dependencies": [
     "hdf5",
+    "cli11",
     "eigen3",
     {
       "name": "openblas",

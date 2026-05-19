@@ -21,12 +21,14 @@ find_package(OpenMP REQUIRED)
 find_package(Eigen3 CONFIG REQUIRED)
 find_package(HDF5 CONFIG REQUIRED)
 find_package(OpenBLAS CONFIG REQUIRED)
+find_package(CLI11 CONFIG REQUIRED)
 
 target_link_libraries(main PRIVATE
         Eigen3::Eigen
         OpenMP::OpenMP_CXX
         hdf5::hdf5-static
         OpenBLAS::OpenBLAS
+        CLI11::CLI11
 )
 
 # ── Compiler flags ───────────────────────────────────────────────────
