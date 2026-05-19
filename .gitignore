@@ -1,5 +1,7 @@
 .idea
 .vscode
+.env
 
+cmake-build-default
 build
 data
