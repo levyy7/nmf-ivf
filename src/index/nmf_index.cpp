@@ -3,25 +3,19 @@
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
-#include <omp.h>
 #include <chrono>
 #include <queue>
+#include <random>
+
+#include "nmf/base.h"
 
 
-// ============================================================
-// Constructor
-// ============================================================
-
-NMFIndex::NMFIndex(const MiniBatchNMF::Config& nmf_cfg,
-                   const Config& idx_cfg)
-    : nmf_cfg_(nmf_cfg),
+NMFIndex::NMFIndex(std::unique_ptr<NMFBase> nmf,
+                        const Config& idx_cfg)
+    : nmf_(std::move(nmf)),
       cfg_(idx_cfg),
       X_docs_(nullptr) {}
 
-
-// ============================================================
-// build()
-// ============================================================
 
 void NMFIndex::build(const SparseMat& X) {
     auto t0 = std::chrono::high_resolution_clock::now();
@@ -76,9 +70,8 @@ void NMFIndex::build(const SparseMat& X) {
 
 void NMFIndex::compute_H(const SparseMat& X_fit)
 {
-    MiniBatchNMF nmf(nmf_cfg_);
-    nmf.fit_transform(X_fit);
-    H_ = nmf.components_;
+    nmf_->fit(X_fit);
+    H_ = nmf_->components();
 }
 
 void NMFIndex::build_lists(const SparseMat& X) {
@@ -124,20 +117,12 @@ void NMFIndex::build_lists(const SparseMat& X) {
 }
 
 
-// ============================================================
-// list_size()
-// ============================================================
-
 int NMFIndex::list_size(int r) const {
     if (r < 0 || r >= static_cast<int>(lists_.size()))
         return 0;
     return static_cast<int>(lists_[r].size());
 }
 
-
-// ============================================================
-// search()
-// ============================================================
 
 std::vector<std::vector<NMFIndex::Result>>
 NMFIndex::search(const SparseMat& queries, int top_k, int nprobe) const
@@ -171,10 +156,6 @@ NMFIndex::search(const SparseMat& queries, int top_k, int nprobe) const
 }
 
 
-// ============================================================
-// search_one()
-// ============================================================
-
 std::vector<NMFIndex::Result>
 NMFIndex::search_one(
                     const Eigen::SparseVector<float, Eigen::RowMajor>& query,
@@ -184,10 +165,7 @@ NMFIndex::search_one(
 {
     const int k = static_cast<int>(query_scores.size());
 
-    // ============================================================
     // 2. Pick top-nprobe latent components
-    // ============================================================
-
     std::vector<int> comps(k);
     std::iota(comps.begin(), comps.end(), 0);
 
@@ -202,10 +180,7 @@ NMFIndex::search_one(
         }
     );
 
-    // ============================================================
     // 3. Gather candidates from inverted lists
-    // ============================================================
-
     std::vector<int> candidates;
     candidates.reserve(cfg_.m * probes);
 
@@ -217,10 +192,7 @@ NMFIndex::search_one(
         }
     }
 
-    // ============================================================
     // 4. Deduplicate candidates
-    // ============================================================
-
     std::sort(candidates.begin(), candidates.end());
 
     candidates.erase(
@@ -228,15 +200,12 @@ NMFIndex::search_one(
         candidates.end()
     );
 
-    // ============================================================
     // 5. FINAL RERANK IN ORIGINAL SPACE
     //
     // score(q, d) = q · x_d
     //
     // q  : dense query vector
     // x_d: sparse document row
-    // ============================================================
-
     std::vector<Result> scored;
     scored.reserve(candidates.size());
 
@@ -253,10 +222,7 @@ NMFIndex::search_one(
         scored.push_back({doc, score});
     }
 
-    // ============================================================
     // 6. Top-k selection
-    // ============================================================
-
     if (scored.size() > static_cast<size_t>(top_k)) {
 
         std::nth_element(
@@ -271,10 +237,7 @@ NMFIndex::search_one(
         scored.resize(top_k);
     }
 
-    // ============================================================
     // 7. Final descending sort
-    // ============================================================
-
     std::sort(
         scored.begin(),
         scored.end(),

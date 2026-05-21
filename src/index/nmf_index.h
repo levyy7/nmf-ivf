@@ -1,7 +1,8 @@
 #pragma once
 
-#include "../clustering/mini_batch_nmf.h"
 #include <vector>
+
+#include "nmf/base.h"
 
 // =====================================================================
 // NMFIndex — Soft Inverted Index over MiniBatchNMF Components
@@ -72,7 +73,7 @@ public:
     // ── Construction ─────────────────────────────────────────────────
     // nmf_cfg controls the inner MiniBatchNMF configuration.
     // idx_cfg controls index parameters (m, nprobe).
-    NMFIndex(const MiniBatchNMF::Config& nmf_cfg, const Config& idx_cfg);
+    NMFIndex(std::unique_ptr<NMFBase> nmf, const Config& idx_cfg);
 
     // ── build() ──────────────────────────────────────────────────────
     // Fits the MiniBatchNMF model on X, projects all training vectors, and
@@ -107,7 +108,7 @@ private:
         float score;   // W_train[doc_id, r] — component projection weight
     };
 
-    MiniBatchNMF::Config                nmf_cfg_;
+    std::unique_ptr<NMFBase>            nmf_;
     Config                              cfg_;
 
     const SparseMat*                    X_docs_;

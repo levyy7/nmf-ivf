@@ -12,7 +12,7 @@
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 
-#include "nmf_index.h"
+#include "index/nmf_index.h"
 
 // ============================================================
 // Helpers
