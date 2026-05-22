@@ -52,10 +52,6 @@
 
 class NMFIndex {
 public:
-    // ── Types ────────────────────────────────────────────────────────
-    using SparseMat = SpMat;   // Eigen::SparseMatrix<float, RowMajor>
-    using DenseMat  = Mat;     // Eigen::MatrixXf
-
     // ── Configuration ────────────────────────────────────────────────
     struct Config {
         int  m       = 100;   // top-m docs stored per inverted list
@@ -79,7 +75,7 @@ public:
     // Fits the MiniBatchNMF model on X, projects all training vectors, and
     // constructs the k inverted lists.  Safe to call multiple times
     // (model and lists are fully reset each time).
-    void build(const SparseMat& X);
+    void build(const SpMat& X);
 
     // ── search() ─────────────────────────────────────────────────────
     // Projects all queries, probes the top-nprobe lists per query,
@@ -88,7 +84,7 @@ public:
     // nprobe: if < 0, uses Config::nprobe.
     // Returns: results[qi] for qi = 0 .. queries.rows()-1.
     std::vector<std::vector<Result>> search(
-        const SparseMat& queries,
+        const SpMat&     queries,
         int              top_k,
         int              nprobe = -1) const;
 
@@ -111,16 +107,16 @@ private:
     std::unique_ptr<NMFBase>            nmf_;
     Config                              cfg_;
 
-    const SparseMat*                    X_docs_;
-    Mat                                 H_;
+    const SpMat*                        X_docs_;
+    Eigen::MatrixXf                     H_;
     int                                 n_docs_ = 0;
 
     std::vector<std::vector<ListEntry>> lists_;    // (k, ≤m) sorted desc
     bool                                built_  = false;
 
-    void compute_H(const SparseMat& X_fit);
+    void compute_H(const SpMat& X_fit);
     // Build all k inverted lists from projected training matrix W (n × k).
-    void build_lists(const SparseMat& X);
+    void build_lists(const SpMat& X);
 
     // Score and rank candidates for one query vector w_q (size k).
     std::vector<Result> search_one(

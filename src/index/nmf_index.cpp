@@ -17,7 +17,7 @@ NMFIndex::NMFIndex(std::unique_ptr<NMFBase> nmf,
       X_docs_(nullptr) {}
 
 
-void NMFIndex::build(const SparseMat& X) {
+void NMFIndex::build(const SpMat& X) {
     auto t0 = std::chrono::high_resolution_clock::now();
 
     if (cfg_.verbose) {
@@ -27,7 +27,7 @@ void NMFIndex::build(const SparseMat& X) {
     n_docs_ = static_cast<int>(X.rows());
 
     //TODO: Data is duplicated to X_fit! Change to reference
-    SparseMat X_fit;
+    SpMat X_fit;
     if (X.rows() > cfg_.sample_size)
     {
         // Randomly sample rows without copying the entire matrix
@@ -68,13 +68,13 @@ void NMFIndex::build(const SparseMat& X) {
 
 
 
-void NMFIndex::compute_H(const SparseMat& X_fit)
+void NMFIndex::compute_H(const SpMat& X_fit)
 {
     nmf_->fit(X_fit);
     H_ = nmf_->components();
 }
 
-void NMFIndex::build_lists(const SparseMat& X) {
+void NMFIndex::build_lists(const SpMat& X) {
     std::cout << "NMFIndex::build_lists()\n";
     const int n = static_cast<int>(X.rows());
     const int k = static_cast<int>(H_.rows());
@@ -125,7 +125,7 @@ int NMFIndex::list_size(int r) const {
 
 
 std::vector<std::vector<NMFIndex::Result>>
-NMFIndex::search(const SparseMat& queries, int top_k, int nprobe) const
+NMFIndex::search(const SpMat& queries, int top_k, int nprobe) const
 {
     std::cout << "NMFIndex::search()\n";
     if (!built_)
@@ -143,7 +143,7 @@ NMFIndex::search(const SparseMat& queries, int top_k, int nprobe) const
         const int chunk_size = end - qi;
 
         // Project only this chunk
-        DenseMat chunk_projected =
+        Eigen::MatrixXf chunk_projected =
             queries.middleRows(qi, chunk_size) * H_.transpose(); // (CHUNK × k)
 
         for (int i = 0; i < chunk_size; ++i) {
@@ -215,7 +215,7 @@ NMFIndex::search_one(
 
         // Sparse dot product:
         // iterate only over non-zeros of document row
-        for (SparseMat::InnerIterator it(*X_docs_, doc); it; ++it) {
+        for (SpMat::InnerIterator it(*X_docs_, doc); it; ++it) {
             score += query.coeff(it.col()) * it.value();
         }
 
