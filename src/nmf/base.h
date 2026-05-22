@@ -8,10 +8,14 @@ using Mat   = Eigen::MatrixXf;
 
 class NMFBase {
 public:
+    enum class Init { Random, Acol };
+
     struct Config {
         int n_components  = -1;
         int max_iter      = 100;
         double tol        = 1e-4;
+        Init init_method = Init::Acol;
+        int  acol_p      = 5;
         bool verbose      = false;
         bool compute_error = true;
         unsigned int random_state = 42;
@@ -39,7 +43,10 @@ protected:
 
     static constexpr float EPS = 1e-10f;
 
+    void init   (const SpMat& X, int k, Mat& W, Mat& H) const;
     void randomInit(const SpMat& X, int k, Mat& W, Mat& H) const;
+    void acolInit  (const SpMat& X, int k, Mat& W, Mat& H) const;
+
     [[nodiscard]] double computeError(const SpMat& X, const Mat& W, const Mat& H) const;
     [[nodiscard]] static double xMean(const SpMat& X);
 };
