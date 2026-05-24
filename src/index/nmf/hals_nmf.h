@@ -1,6 +1,6 @@
 #pragma once
 
-#include "nmf/base.h"
+#include "index/nmf/base.h"
 
 class HalsNMF : public NMFBase {
 public:

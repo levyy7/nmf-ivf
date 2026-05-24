@@ -1,36 +1,86 @@
 #include "nmf_index.h"
 
+// Assume these are the definitions discussed previously
+#include "utils/hdf5_loader.h"
+#include "utils/hdf5_writer.h"
+
 #include <algorithm>
 #include <stdexcept>
 #include <iostream>
 #include <chrono>
-#include <queue>
 #include <random>
+#include <numeric>
 
-#include "nmf/base.h"
+// ── Constructors ─────────────────────────────────────────────────────
 
+NMFIndex::NMFIndex(std::unique_ptr<IVFBackend> backend, const Config& cfg)
+    : backend_(std::move(backend)),
+      cfg_(cfg)
+{
+    if (!backend_) {
+        throw std::invalid_argument("NMFIndex requires a valid IVFBackend instance.");
+    }
+}
 
-NMFIndex::NMFIndex(std::unique_ptr<NMFBase> nmf,
-                        const Config& idx_cfg)
-    : nmf_(std::move(nmf)),
-      cfg_(idx_cfg),
-      X_docs_(nullptr) {}
+// ── File I/O ─────────────────────────────────────────────────────────
 
+std::unique_ptr<NMFIndex> NMFIndex::load(const std::string& path,
+                                         BackendFactory backend_factory,
+                                         const Config& cfg)
+{
+    if (cfg.verbose) {
+        std::cout << "[NMFIndex] Loading index from " << path << "...\n";
+    }
 
-void NMFIndex::build(const SpMat& X) {
-    auto t0 = std::chrono::high_resolution_clock::now();
+    HDF5Loader loader(path);
+
+    // Read the datasets stored within the /index group
+    Eigen::MatrixXf H = loader.loadDense<float>("/index/H");
+    Eigen::MatrixXi lists = loader.loadDense<int>("/index/lists");
+
+    // Let the caller's factory wrap the concrete implementation
+    std::unique_ptr<IVFBackend> backend = backend_factory(H, lists);
+
+    if (cfg.verbose) {
+        std::cout << "[NMFIndex] Successfully loaded index: "
+                  << H.rows() << " components, list capacity: " << lists.cols() << "\n";
+    }
+
+    return std::make_unique<NMFIndex>(std::move(backend), cfg);
+}
+
+void NMFIndex::save_index(const std::string& path) const {
+    if (!is_built()) {
+        throw std::runtime_error("NMFIndex::save — Cannot save an unbuilt index.");
+    }
 
     if (cfg_.verbose) {
-        std::cout << "NMFIndex::build()\n";
+        std::cout << "[NMFIndex] Saving index to " << path << "...\n";
     }
-    X_docs_ = &X;
-    n_docs_ = static_cast<int>(X.rows());
 
-    //TODO: Data is duplicated to X_fit! Change to reference
+    HDF5Writer writer(path);
+    writer.writeIndex(backend_->components(), backend_->lists());
+
+    if (cfg_.verbose) {
+        std::cout << "[NMFIndex] Index saved successfully.\n";
+    }
+}
+
+// ── Build Logic ──────────────────────────────────────────────────────
+
+void NMFIndex::build(const SpMat& X, const std::unique_ptr<NMFBase>& nmf) {
+    if (!nmf) {
+        throw std::invalid_argument("NMFIndex::build — NMFBase model is missing.");
+    }
+
+    auto t0 = std::chrono::steady_clock::now();
+
+    if (cfg_.verbose) {
+        std::cout << "[NMFIndex] Starting NMF fit and index build...\n";
+    }
+
     SpMat X_fit;
-    if (X.rows() > cfg_.sample_size)
-    {
-        // Randomly sample rows without copying the entire matrix
+    if (X.rows() > cfg_.sample_size) {
         std::vector<int> indices(X.rows());
         std::iota(indices.begin(), indices.end(), 0);
 
@@ -38,213 +88,112 @@ void NMFIndex::build(const SpMat& X) {
                      std::mt19937{std::random_device{}()});
 
         indices.resize(cfg_.sample_size);
-
-        // Create sampled matrix
         X_fit.resize(cfg_.sample_size, X.cols());
 
         for (int i = 0; i < cfg_.sample_size; ++i) {
             X_fit.row(i) = X.row(indices[i]);
         }
-        compute_H(X_fit);
+
+        nmf->fit(X_fit);
+    } else {
+        nmf->fit(X);
     }
-    else {
-        compute_H(X);
-    }
 
-    // 2. Build inverted lists
-    build_lists(X);
+    // Pass X and the extracted components directly into the backend
+    backend_->build(X, nmf->components());
 
-    built_ = true;
+    // Notice: `nmf` goes out of scope here and its memory is automatically freed.
 
-    auto t1 = std::chrono::high_resolution_clock::now();
+    auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
+    build_time_sec_ = static_cast<float>(ms / 1000.0);
+
     if (cfg_.verbose) {
-        std::cout << "Index built: n_docs=" << n_docs_
-                  << " k=" << H_.rows()
-                  << " | build time: " << ms << " ms\n";
+        std::cout << "[NMFIndex] Index completely built | total time: " << build_time_sec_ << " sec\n";
     }
 }
 
+// ── Search Logic ─────────────────────────────────────────────────────
 
-
-void NMFIndex::compute_H(const SpMat& X_fit)
+std::vector<std::vector<IVFBackend::SearchResult>>
+NMFIndex::search(const SpMat& queries,
+                 const SpMat& X_docs,
+                 int          top_k,
+                 const IVFBackend::SearchParams* params) const
 {
-    nmf_->fit(X_fit);
-    H_ = nmf_->components();
-}
-
-void NMFIndex::build_lists(const SpMat& X) {
-    std::cout << "NMFIndex::build_lists()\n";
-    const int n = static_cast<int>(X.rows());
-    const int k = static_cast<int>(H_.rows());
-    const int m = cfg_.m;
-
-    lists_.assign(k, {});
-
-    #pragma omp parallel for schedule(dynamic)
-    for (int topic = 0; topic < k; ++topic) {
-
-        const Eigen::VectorXf h = H_.row(topic).transpose();
-
-        // Min-heap capped at m entries — never grows beyond m
-        // Entry: (score, doc_id)
-        using Pair = std::pair<float, int>;
-        std::priority_queue<Pair, std::vector<Pair>, std::greater<Pair>> heap;
-        for (int i = 0; i < n; ++i) {
-            float score = X.row(i).dot(h);
-            if (score <= 0.f) continue;
-
-            if (static_cast<int>(heap.size()) < m) {
-                heap.emplace(score, i);
-            } else if (score > heap.top().first) {
-                heap.pop();
-                heap.emplace(score, i);
-            }
-        }
-
-        // Drain heap into sorted list (descending)
-        std::vector<ListEntry> tmp;
-        tmp.resize(heap.size());
-        int idx = static_cast<int>(heap.size()) - 1;
-        while (!heap.empty()) {
-            tmp[idx--] = {heap.top().second, heap.top().first};
-            heap.pop();
-        }
-
-        lists_[topic] = std::move(tmp);
+    if (!is_built()) {
+        throw std::runtime_error("NMFIndex::search — index is not built");
     }
+
+    return backend_->search(queries, X_docs, top_k, params);
 }
 
-
-int NMFIndex::list_size(int r) const {
-    if (r < 0 || r >= static_cast<int>(lists_.size()))
-        return 0;
-    return static_cast<int>(lists_[r].size());
-}
-
-
-std::vector<std::vector<NMFIndex::Result>>
-NMFIndex::search(const SpMat& queries, int top_k, int nprobe) const
+std::vector<std::vector<IVFBackend::SearchResult>>
+NMFIndex::search_and_save(const std::string& path,
+    const SpMat& queries,
+    const SpMat& X_docs,
+    int          top_k,
+    const IVFBackend::SearchParams* params) const
 {
-    std::cout << "NMFIndex::search()\n";
-    if (!built_)
-        throw std::runtime_error("Index not built");
+    auto t0 = std::chrono::steady_clock::now();
 
-    if (nprobe < 0) nprobe = cfg_.nprobe;
+    std::vector<std::vector<IVFBackend::SearchResult>> results = search(queries, X_docs, top_k, params);
 
-    const int Q = static_cast<int>(queries.rows());
-    std::vector<std::vector<Result>> results(Q);
+    auto t1 = std::chrono::steady_clock::now();
+    float query_time_sec = std::chrono::duration<float>(t1 - t0).count();
 
-    const int CHUNK = 64; // tune based on available RAM
-    #pragma omp parallel for schedule(dynamic)
-    for (int qi = 0; qi < Q; qi += CHUNK) {
-        const int end = std::min(qi + CHUNK, Q);
-        const int chunk_size = end - qi;
-
-        // Project only this chunk
-        Eigen::MatrixXf chunk_projected =
-            queries.middleRows(qi, chunk_size) * H_.transpose(); // (CHUNK × k)
-
-        for (int i = 0; i < chunk_size; ++i) {
-            Eigen::SparseVector<float, Eigen::RowMajor> query = queries.row(qi + i);
-            results[qi + i] = search_one(query, chunk_projected.row(i), top_k, nprobe);
-        }
-    }
-
+    save_results(path, results, query_time_sec);
     return results;
 }
 
 
-std::vector<NMFIndex::Result>
-NMFIndex::search_one(
-                    const Eigen::SparseVector<float, Eigen::RowMajor>& query,
-                    const Eigen::RowVectorXf& query_scores,
-                    int top_k,
-                    int nprobe) const
+bool NMFIndex::is_built() const {
+    return backend_ && backend_->is_built();
+}
+
+void NMFIndex::save_results(const std::string& path,
+                            const std::vector<std::vector<IVFBackend::SearchResult>>& results,
+                            float query_time_sec) const
 {
-    const int k = static_cast<int>(query_scores.size());
+    if (results.empty()) return;
 
-    // 2. Pick top-nprobe latent components
-    std::vector<int> comps(k);
-    std::iota(comps.begin(), comps.end(), 0);
+    if (cfg_.verbose) {
+        std::cout << "[NMFIndex] Saving search results to " << path << "...\n";
+    }
 
-    const int probes = std::min(nprobe, k);
+    int n_queries = static_cast<int>(results.size());
 
-    std::partial_sort(
-        comps.begin(),
-        comps.begin() + probes,
-        comps.end(),
-        [&](int a, int b) {
-            return query_scores[a] > query_scores[b];
-        }
-    );
+    // Determine max_k (in case some queries found fewer results than top_k)
+    int max_k = 0;
+    for (const auto& res : results) {
+        max_k = std::max(max_k, static_cast<int>(res.size()));
+    }
 
-    // 3. Gather candidates from inverted lists
-    std::vector<int> candidates;
-    candidates.reserve(cfg_.m * probes);
+    // Initialize padding arrays
+    // ID = -1 (Which turns to 0 internally inside writeKnns, perfectly representing invalid 1-based index)
+    // Score = -Infinity
+    Eigen::MatrixXi knns = Eigen::MatrixXi::Constant(n_queries, max_k, -1);
+    Eigen::MatrixXf dists = Eigen::MatrixXf::Constant(n_queries, max_k, -std::numeric_limits<float>::infinity());
 
-    for (int i = 0; i < probes; ++i) {
-        const int r = comps[i];
-
-        for (const auto& e : lists_[r]) {
-            candidates.push_back(e.doc_id);
+    for (int i = 0; i < n_queries; ++i) {
+        for (size_t j = 0; j < results[i].size(); ++j) {
+            knns(i, j) = results[i][j].id;
+            dists(i, j) = results[i][j].score;
         }
     }
 
-    // 4. Deduplicate candidates
-    std::sort(candidates.begin(), candidates.end());
+    // HDF5Writer opens existing files in RDWR, so it safely appends.
+    HDF5Writer writer(path);
+    writer.writeKnns(knns, true); // true = auto bumps to 1-based indexing for you
+    writer.writeDists(dists);
 
-    candidates.erase(
-        std::unique(candidates.begin(), candidates.end()),
-        candidates.end()
-    );
+    writer.writeAttribute("algo", "nmf-ivf");
+    writer.writeAttribute("task", "task3");
+    writer.writeAttribute("querytime", query_time_sec);
+    // TODO: Add params metadata attribute
 
-    // 5. FINAL RERANK IN ORIGINAL SPACE
-    //
-    // score(q, d) = q · x_d
-    //
-    // q  : dense query vector
-    // x_d: sparse document row
-    std::vector<Result> scored;
-    scored.reserve(candidates.size());
-
-    for (int doc : candidates) {
-
-        float score = 0.f;
-
-        // Sparse dot product:
-        // iterate only over non-zeros of document row
-        for (SpMat::InnerIterator it(*X_docs_, doc); it; ++it) {
-            score += query.coeff(it.col()) * it.value();
-        }
-
-        scored.push_back({doc, score});
+    if (cfg_.verbose) {
+        std::cout << "[NMFIndex] Search results successfully saved.\n";
     }
-
-    // 6. Top-k selection
-    if (scored.size() > static_cast<size_t>(top_k)) {
-
-        std::nth_element(
-            scored.begin(),
-            scored.begin() + top_k,
-            scored.end(),
-            [](const Result& a, const Result& b) {
-                return a.score > b.score;
-            }
-        );
-
-        scored.resize(top_k);
-    }
-
-    // 7. Final descending sort
-    std::sort(
-        scored.begin(),
-        scored.end(),
-        [](const Result& a, const Result& b) {
-            return a.score > b.score;
-        }
-    );
-
-    return scored;
 }

@@ -172,6 +172,33 @@ public:
         return gt;
     }
 
+    // ── Read String Attribute ───────────────────────────────────────
+    std::string readStringAttribute(const std::string& attr_name) const {
+        hid_t root = H5Gopen2(file_, "/", H5P_DEFAULT);
+        if (root < 0) return "";
+
+        if (H5Aexists(root, attr_name.c_str()) <= 0) {
+            H5Gclose(root);
+            return "";
+        }
+
+        hid_t attr = H5Aopen(root, attr_name.c_str(), H5P_DEFAULT);
+        hid_t type = H5Aget_type(attr);
+        hid_t native_type = H5Tget_native_type(type, H5T_DIR_ASCEND);
+
+        size_t size = H5Tget_size(type);
+        std::vector<char> buf(size + 1, '\0');
+
+        H5Aread(attr, native_type, buf.data());
+
+        H5Tclose(native_type);
+        H5Tclose(type);
+        H5Aclose(attr);
+        H5Gclose(root);
+
+        return std::string(buf.data());
+    }
+
 private:
     hid_t file_ = -1;
 

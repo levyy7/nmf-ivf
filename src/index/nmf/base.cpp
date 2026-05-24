@@ -5,7 +5,7 @@
 #include <limits>
 #include <random>
 
-#include "nmf/base.h"
+#include "index/nmf/base.h"
 
 NMFBase::NMFBase(const Config& cfg)
     : cfg(cfg) {}

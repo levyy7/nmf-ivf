@@ -3,8 +3,7 @@
 #include <Eigen/Dense>
 #include <Eigen/Sparse>
 
-using SpMat = Eigen::SparseMatrix<float, Eigen::RowMajor>;
-using Mat   = Eigen::MatrixXf;
+#include "utils/eigen_utils.h"
 
 class NMFBase {
 public:

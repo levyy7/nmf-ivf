@@ -1,6 +1,6 @@
 #pragma once
 
-#include "nmf/base.h"
+#include "index/nmf/base.h"
 
 
 class MuNMF : public NMFBase {
