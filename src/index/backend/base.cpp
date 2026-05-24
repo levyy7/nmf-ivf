@@ -12,16 +12,18 @@ void IVFBackend::build(const SpMat& X, Eigen::MatrixXf H) {
     // If the caller calls std::move(H), zero copies are made.
     H_ = std::move(H);
 
+    const int n = static_cast<int>(X.rows());
+    const int k = static_cast<int>(H_.rows());
+    const int m = static_cast<int>(std::ceil((static_cast<double>(n) / k) * overlap_factor_));
+
     if (cfg_.verbose) {
         std::cout << "[IVFBackend] Starting index build...\n";
         std::cout << "[IVFBackend] Documents (n): " << X.rows() << "\n";
         std::cout << "[IVFBackend] Topics (k):    " << H_.rows() << "\n";
-        std::cout << "[IVFBackend] List cap (m):  " << cfg_.m << "\n";
+        std::cout << "[IVFBackend] List cap (m):  " << m << "\n";
     }
 
-    const int n = static_cast<int>(X.rows());
-    const int k = static_cast<int>(H_.rows());
-    const int m = cfg_.m;
+
 
     // Initialize lists as k x m, filled with -1 to pad missing entries
     lists_ = Eigen::MatrixXi::Constant(k, m, -1);

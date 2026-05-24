@@ -13,11 +13,10 @@ class IVFBackend {
 public:
     // ── Configuration ─────────────────────────────────────────────────────
     struct Config {
-        int  m;
         bool verbose;
 
-        Config(int m_val = 100, bool v_val = false)
-            : m(m_val), verbose(v_val) {}
+        Config(bool v_val = false)
+            : verbose(v_val) {}
     };
 
     struct SearchParams {
@@ -86,6 +85,7 @@ protected:
     Eigen::MatrixXi lists_; // k x m matrix containing document IDs
     Config          cfg_;
     bool            built_ = false;
+    static constexpr float overlap_factor_ = 10.0f;
 
     // ── Pure-virtual implementation hooks ─────────────────────────────
     // Evaluates a single query. `query_scores` contains the projection of
