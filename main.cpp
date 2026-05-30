@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
 
   RunConfig base = preset(dataset_name);
 
+  if (app.count("--dataset")) base.dataset = cfg.dataset;
   if (app.count("--data-dir")) base.data_dir = cfg.data_dir;
   if (app.count("--nmf")) base.nmf_type = cfg.nmf_type;
   if (app.count("--n-components")) base.n_components = cfg.n_components;
