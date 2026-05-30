@@ -37,15 +37,18 @@ add_executable(sampling_recall_analysis
         ${INDEX_SOURCES}
 )
 
-# ── Packages ─────────────────────────────────────────────────────────
-find_package(OpenMP  REQUIRED)
-find_package(Eigen3  CONFIG REQUIRED)
-find_package(HDF5    CONFIG REQUIRED)
-find_package(OpenBLAS CONFIG REQUIRED)
-find_package(CLI11   CONFIG REQUIRED)
+add_executable(k_sweep
+        src/experiments/k_sweep.cpp
+        ${INDEX_SOURCES}
+)
 
-# ── Apply identical settings to both targets ─────────────────────────
-foreach(TARGET main recall_benchmark index_coverage_benchmark sampling_recall_analysis)
+find_package(OpenMP REQUIRED)
+find_package(Eigen3 CONFIG REQUIRED)
+find_package(HDF5 CONFIG REQUIRED)
+find_package(OpenBLAS CONFIG REQUIRED)
+find_package(CLI11 CONFIG REQUIRED)
+
+foreach (TARGET main recall_benchmark index_coverage_benchmark sampling_recall_analysis k_sweep)
     target_include_directories(${TARGET} PRIVATE src)
 
     target_link_libraries(${TARGET} PRIVATE
@@ -65,4 +68,4 @@ foreach(TARGET main recall_benchmark index_coverage_benchmark sampling_recall_an
     target_compile_definitions(${TARGET} PRIVATE
             EIGEN_USE_BLAS
     )
-endforeach()
+endforeach ()
