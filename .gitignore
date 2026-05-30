@@ -4,5 +4,6 @@
 
 cmake-build-default
 build
-data
+data/fiqa-dev.h5
+data/nq.h5
 output
