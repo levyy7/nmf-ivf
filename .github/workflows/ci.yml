@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t nmf-ivf .
+
+      - name: Run search (Task 3 Spot Check - FIQA Dev)
+        run: |
+          mkdir -p results/task-3-spot-check
+          
+          echo "=== Running Task 3 NMF-IVF on FIQA ==="
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --volume $(pwd)/data:/app/data:ro \
+            --volume $(pwd)/results:/app/results:rw \
+            nmf-ivf \
+            --dataset fiqa-dev \
+            --data-dir /app/data/task-3-spot-check \
+            --save-results /app/results/task-3-spot-check/results.h5 \
+            --threads 2 --n-components 256 --max-iter 20
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Evaluate and Generate JSON Metrics
+        run: |
+          echo "=== Evaluating Results ==="
+          python eval.py \
+            --results results/task-3-spot-check/results.h5 \
+            --gt data/task-3-spot-check/fiqa-dev.h5 \
+            --k 30 \
+            --output results/task-3-spot-check/metrics.json
+
+      - name: Upload Results Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FIQA-Metrics
+          path: results/task-3-spot-check/metrics.json
