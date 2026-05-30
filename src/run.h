@@ -92,7 +92,8 @@ inline RunConfig preset(const std::string& name) {
     cfg.max_misses = 30;
     cfg.drop_ratio = 0.15f;
   } else {
-    throw std::invalid_argument("Unknown dataset preset: " + name);
+    std::cout << "No present for dataset " + name + ". Using defaults.\n";
+    return {};
   }
   return cfg;
 }
