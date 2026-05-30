@@ -25,7 +25,7 @@ jobs:
             --volume $(pwd)/data:/app/data:ro \
             --volume $(pwd)/results:/app/results:rw \
             nmf-ivf \
-            --dataset fiqa-dev \
+            --dataset benchmark-dev-fiqa-small \
             --data-dir /app/data/task-3-spot-check \
             --save-results /app/results/task-3-spot-check/results.h5 \
             --threads 2 --n-components 256 --max-iter 20
