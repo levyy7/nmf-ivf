@@ -28,6 +28,7 @@ jobs:
             --dataset benchmark-dev-fiqa-small \
             --data-dir /app/data/task-3-spot-check \
             --save-results /app/results/task-3-spot-check/results.h5 \
+            --no-save-index \
             --threads 2 --n-components 256 --max-iter 20
 
       - name: Set up Python
