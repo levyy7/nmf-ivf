@@ -1,80 +1,42 @@
 #include "hals_nmf.h"
 
-#include <cblas.h>
-
-
 HalsNMF::HalsNMF(const Config& cfg)
-    : NMFBase(cfg),
-    w_sweeps(cfg.w_sweeps),
-    h_sweeps(cfg.h_sweeps)
-{}
-
-
-void HalsNMF::updateW(const SpMat& X, Mat& W, const Mat& H) const
-{
-    const int n = X.rows();
-    const int k = H.rows();
-    const Mat G = H * H.transpose();   // (k×k) ColMajor ✓
-
-    openblas_set_num_threads(1);
-    #pragma omp parallel for schedule(dynamic, 64)
-    for (int i = 0; i < n; ++i) {
-
-        // c_i = X_i · Hᵀ — iterate only over sparse nonzeros
-        Eigen::VectorXf c = Eigen::VectorXf::Zero(k);
-        for (SpMat::InnerIterator it(X, i); it; ++it)
-            c.noalias() += it.value() * H.col(it.col());
-
-        Eigen::VectorXf w  = W.row(i).transpose();
-        Eigen::VectorXf Gw = G * w;    // residual tracker, updated incrementally
-
-        for (int s = 0; s < w_sweeps; ++s) {
-            for (int r = 0; r < k; ++r) {
-                const float numer  = c(r) - Gw(r) + G(r, r) * w(r);
-                const float new_w  = std::max(0.f, numer / (G(r, r) + EPS));
-                const float delta  = new_w - w(r);
-
-                if (delta != 0.f) {
-                    Gw.noalias() += delta * G.col(r);   // O(k), contiguous ✓
-                    w(r) = new_w;
-                }
-            }
-        }
-
-        W.row(i) = w.transpose();
-    }
-    openblas_set_num_threads(8);
+  : NMFBase(cfg) {
 }
 
-void HalsNMF::updateH(const SpMat& X, const Mat& W, Mat& H) const
-{
-    const Mat A = W.transpose() * W;                     // (k×k) ColMajor ✓
-    const Mat B = (X.transpose() * W).transpose();       // (k×f)
+void HalsNMF::updateW(const SpMat& X, Mat& W, const Mat& H) const {
+  // Precompute constant matrices for this update step
+  const Mat HHt = H * H.transpose(); // Size: K x K
+  const Mat XHt = X * H.transpose(); // Size: N x K (Sparse * Dense)
 
-    const int k = H.rows();
-    const int f = H.cols();
+  // HALS updates MUST be strictly sequential.
+  // Do not use OpenMP here; W.col(k) relies on the updated W.col(j) for j < k.
+  for (int k = 0; k < W.cols(); ++k) {
+    // 1. Calculate the unconstrained least-squares step for column k.
+    // Mathematically: XHt_{:, k} - sum_{j != k} W_{:, j} * HHt_{j, k}
+    // We optimize this by subtracting the full sum (W * HHt) and adding back the k-th term.
+    Eigen::VectorXf wk = XHt.col(k) - (W * HHt.col(k)) + (W.col(k) * HHt(k, k));
 
-    openblas_set_num_threads(1);
-    #pragma omp parallel for schedule(static)
-    for (int j = 0; j < f; ++j) {
-        Eigen::VectorXf h  = H.col(j);
-        Eigen::VectorXf Ah = A * h;    // residual tracker, updated incrementally
-        const auto      b  = B.col(j);
+    // 2. Divide by the diagonal scaling factor and project negative values to 0
+    W.col(k) = (wk.array() / std::max(HHt(k, k), EPS)).max(0.0f).matrix();
+  }
+}
 
-        for (int s = 0; s < h_sweeps; ++s) {
-            for (int r = 0; r < k; ++r) {
-                const float numer  = b(r) - Ah(r) + A(r, r) * h(r);
-                const float new_h  = std::max(0.f, numer / (A(r, r) + EPS));
-                const float delta  = new_h - h(r);
+void HalsNMF::updateH(const SpMat& X, const Mat& W, Mat& H) const {
+  // Precompute constant matrices for this update step
+  const Mat WtW = W.transpose() * W; // Size: K x K
 
-                if (delta != 0.f) {
-                    Ah.noalias() += delta * A.col(r);   // O(k), contiguous ✓
-                    h(r) = new_h;
-                }
-            }
-        }
+  // (X^T * W)^T is the most efficient way to multiply Dense^T * Sparse in Eigen
+  const Mat WtX = (X.transpose() * W).transpose(); // Size: K x M
 
-        H.col(j) = h;
-    }
-    openblas_set_num_threads(8);
+  // Updates MUST be strictly sequential.
+  for (int k = 0; k < H.rows(); ++k) {
+    // 1. Calculate the unconstrained least-squares step for row k.
+    // Mathematically: WtX_{k, :} - sum_{j != k} WtW_{k, j} * H_{j, :}
+    Eigen::RowVectorXf hk = WtX.row(k) - (WtW.row(k) * H) + (
+                              H.row(k) * WtW(k, k));
+
+    // 2. Divide by diagonal scaling factor and project to >= 0
+    H.row(k) = (hk.array() / std::max(WtW(k, k), EPS)).max(0.0f).matrix();
+  }
 }
