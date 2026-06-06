@@ -59,8 +59,9 @@ int main() {
       cfg.eval_k = 30;
 
       // 6. File I/O: Save ONLY the results, ignore the index
-      cfg.save_index_path = "";
-      cfg.save_results_path = dir_path + "/exp_" + std::to_string(seed) + ".h5";
+      cfg.skip_save_results = true;
+      cfg.output_dir = dir_path;
+      cfg.output_path = dir_path + "/exp_" + std::to_string(seed) + ".h5";
 
       // Visual separator for the logs
       std::cout <<
@@ -68,7 +69,7 @@ int main() {
       std::cout << "  RUN " << run_counter++ << "  |  SAMPLE SIZE: " << ss
           << "  |  ITER: " << (i + 1) << "/" << runs_per_size
           << "  |  SEED: " << seed << "\n";
-      std::cout << "  OUTPUT: " << cfg.save_results_path << "\n";
+      std::cout << "  OUTPUT: " << cfg.output_path << "\n";
       std::cout <<
           "████████████████████████████████████████████████████████████████\n\n";
 
