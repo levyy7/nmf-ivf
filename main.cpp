@@ -1,119 +1,141 @@
 // main.cpp
 #include <iostream>
 #include <fstream>
+#include <filesystem> // For creating output directories
+#include <chrono>
+#include <iomanip>
+#include <sstream>
 
 #include <CLI/CLI.hpp>
+#include <nlohmann/json.hpp>
 
 #include "run.h"
 
 using namespace std;
+using json = nlohmann::json;
 
+
+std::string getCurrentDate() {
+  auto now = std::chrono::system_clock::now();
+  auto in_time_t = std::chrono::system_clock::to_time_t(now);
+  std::stringstream ss;
+  // Added _%H%M%S for Hours, Minutes, and Seconds
+  ss << std::put_time(std::localtime(&in_time_t), "%Y%m%d_%H%M%S");
+  return ss.str();
+}
 
 int main(int argc, char** argv) {
   CLI::App app{"NMF Index Runner"};
 
-  std::string dataset_name;
-  RunConfig cfg;
+  RunConfig cli_cfg;
 
-  // Top-level flags
-  // Made dataset required. You can now pass it via -d, --dataset, or as a positional argument.
-  // Top-level flags
-  app.add_option("dataset,-d,--dataset", dataset_name,
-                 "Dataset preset: nq | fiqa-dev")
-     ->required();
-  app.add_option("--data-dir", cfg.data_dir,
-                 "Directory containing dataset files");
-  app.add_option("-t,--threads", cfg.threads, "OpenBLAS/OMP threads");
+  // ---> Benchmark / Task Required Flags
+  app.add_option("--input", cli_cfg.input_path,
+                 "Path to the dataset .h5 file")->required();
+  app.add_option("--task-description", cli_cfg.task_desc_path,
+                 "Path to the config.json file")->required();
+  app.add_option("--output", cli_cfg.output_dir,
+                 "Directory to save output files")->required();
+
+  // ---> Optional System Overrides
+  app.add_option("-t,--threads", cli_cfg.threads, "OpenBLAS/OMP threads");
 
   // NMF overrides
   auto* nmf_group = app.add_option_group("NMF Model Settings");
-  nmf_group->add_option("--nmf", cfg.nmf_type, "NMF solver: hals | mu")->
-             capture_default_str();
-  nmf_group->add_option("--sample-size", cfg.sample_size,
-                        "Number of training samples to use for NMF (default: 150k)");
-  nmf_group->add_option("--n-components", cfg.n_components);
-  nmf_group->add_option("--tol", cfg.tol);
-  nmf_group->add_option("--max-iter", cfg.max_iter);
-  nmf_group->add_option("--forget-factor", cfg.forget_factor);
-  nmf_group->add_option("--random-state", cfg.random_state);
-  nmf_group->add_option("--init", cfg.init_method,
-                        "Initialisation: acol (default) | random")->
-             capture_default_str();
-  nmf_group->add_option("--acol-p", cfg.acol_p,
-                        "Rows averaged per component in Acol init (default: 5)");
-  nmf_group->add_option("--w-sweeps", cfg.w_sweeps, "HALS W sweeps per iter");
-  nmf_group->add_option("--h-sweeps", cfg.h_sweeps, "HALS H sweeps per iter");
-  app.add_flag("--debug", cfg.debug,
-               "Verbose output + error computation each iteration");
-  app.add_flag("--evaluate-recall", cfg.evaluate_recall,
-               "Evaluate recall for the built index");
+  nmf_group->add_option("--nmf", cli_cfg.nmf_type, "NMF solver: hals | mu");
+  nmf_group->add_option("--sample-size", cli_cfg.sample_size,
+                        "NMF train samples");
+  nmf_group->add_option("--n-components", cli_cfg.n_components);
+  nmf_group->add_option("--tol", cli_cfg.tol);
+  nmf_group->add_option("--max-iter", cli_cfg.max_iter);
+  nmf_group->add_option("--forget-factor", cli_cfg.forget_factor);
+  nmf_group->add_option("--random-state", cli_cfg.random_state);
+  nmf_group->add_option("--init", cli_cfg.init_method, "Init: acol | random");
+  nmf_group->add_option("--acol-p", cli_cfg.acol_p);
+  nmf_group->add_option("--w-sweeps", cli_cfg.w_sweeps);
+  nmf_group->add_option("--h-sweeps", cli_cfg.h_sweeps);
+  app.add_flag("--debug", cli_cfg.debug, "Verbose output + error computation");
+  app.add_flag("--evaluate-recall", cli_cfg.evaluate_recall,
+               "Evaluate recall on build");
 
   // Index & Backend overrides
   auto* idx_group = app.add_option_group("Index & Backend Settings");
-  idx_group->add_option("--backend", cfg.backend_type, "Backend type: naive")->
-             capture_default_str();
-  idx_group->add_option("--m", cfg.m, "Number of docs stored per list");
-  idx_group->add_option("--nprobe", cfg.nprobe,
-                        "Number of lists to probe at query time");
-
-  // ---> Added Adaptive Backend Parameters
-  idx_group->add_option("--max-misses", cfg.max_misses,
-                        "Adaptive backend: Max consecutive misses before stopping list search");
-  idx_group->add_option("--drop-ratio", cfg.drop_ratio,
-                        "Adaptive backend: Score drop ratio to stop checking lists");
+  idx_group->add_option("--backend", cli_cfg.backend_type);
+  idx_group->add_option("--m", cli_cfg.m);
+  idx_group->add_option("--nprobe", cli_cfg.nprobe);
+  idx_group->add_option("--max-misses", cli_cfg.max_misses);
+  idx_group->add_option("--drop-ratio", cli_cfg.drop_ratio);
 
   // File Output Options
   auto* io_group = app.add_option_group("File I/O");
-
-  bool skip_save_index = false;
-  bool skip_save_results = false;
-
-  io_group->add_flag("--no-save-index", skip_save_index,
-                     "Do NOT save the built index (default is to save)");
-  io_group->add_flag("--no-save-results", skip_save_results,
-                     "Do NOT save search results (default is to save)");
-
-  io_group->add_option("--save-index", cfg.save_index_path,
-                       "Override default path to save the built index (.h5)");
-  io_group->add_option("--save-results", cfg.save_results_path,
-                       "Override default path to save search results (knns & dists .h5)");
+  io_group->add_flag("--no-save-index", cli_cfg.skip_save_index,
+                     "Do NOT save the built index");
+  io_group->add_flag("--no-save-results", cli_cfg.skip_save_results,
+                     "Do NOT save search results");
 
   CLI11_PARSE(app, argc, argv);
 
-  RunConfig base = preset(dataset_name);
-
-  if (app.count("--dataset")) base.dataset = dataset_name;
-  if (app.count("--data-dir")) base.data_dir = cfg.data_dir;
-  if (app.count("--nmf")) base.nmf_type = cfg.nmf_type;
-  if (app.count("--n-components")) base.n_components = cfg.n_components;
-  if (app.count("--backend")) base.backend_type = cfg.backend_type;
-  if (app.count("--m")) base.m = cfg.m;
-  if (app.count("--nprobe")) base.nprobe = cfg.nprobe;
-  if (app.count("--max-misses")) base.max_misses = cfg.max_misses;
-  if (app.count("--drop-ratio")) base.drop_ratio = cfg.drop_ratio;
-  if (app.count("--threads")) base.threads = cfg.threads;
-  if (app.count("--w-sweeps")) base.w_sweeps = cfg.w_sweeps;
-  if (app.count("--h-sweeps")) base.h_sweeps = cfg.h_sweeps;
-  if (app.count("--tol")) base.tol = cfg.tol;
-  if (app.count("--max-iter")) base.max_iter = cfg.max_iter;
-  if (app.count("--random-state")) base.random_state = cfg.random_state;
-  if (app.count("--init")) base.init_method = cfg.init_method;
-  if (app.count("--acol-p")) base.acol_p = cfg.acol_p;
-
-  // Handle I/O logic: clear path if disabled, otherwise accept overrides
-  if (skip_save_index) {
-    base.save_index_path = "";
-  } else if (app.count("--save-index")) {
-    base.save_index_path = cfg.save_index_path;
+  // 1. Parse JSON Config
+  std::ifstream f(cli_cfg.task_desc_path);
+  if (!f.is_open()) {
+    std::cerr << "Fatal Error: Cannot open task description JSON: "
+        << cli_cfg.task_desc_path << "\n";
+    return 1;
   }
 
-  if (skip_save_results) {
-    base.save_results_path = "";
-  } else if (app.count("--save-results")) {
-    base.save_results_path = cfg.save_results_path;
-  }
+  json task_config;
+  f >> task_config;
 
-  base.debug = app.count("--debug") > 0;
+  // 2. Load Preset based on JSON's dataset_name
+  std::string ds_name = task_config.value("dataset_name", "nq");
+  RunConfig final_cfg = preset(ds_name);
 
-  return run(base);
+  // 3. Populate Runtime Paths & Extracted JSON Targets
+  final_cfg.input_path = cli_cfg.input_path;
+  final_cfg.task_desc_path = cli_cfg.task_desc_path;
+  final_cfg.output_dir = cli_cfg.output_dir;
+  final_cfg.task_id = task_config.value("task", "unknown-task");
+
+  final_cfg.h5_train_path = task_config.value("data", "train");
+  final_cfg.h5_queries_path = task_config.value("queries", "otest/queries");
+  final_cfg.h5_gt_path = task_config.value("gt_I", "otest/knns");
+  final_cfg.eval_k = task_config.value("k", 30);
+
+  // 4. Safely ensure output directory exists and build unique output path
+  std::filesystem::create_directories(final_cfg.output_dir);
+
+  std::string date_str = getCurrentDate();
+  // Example output: /your/dir/task3-fiqa-small-20260606.h5
+  std::string filename = final_cfg.task_id + "-" + final_cfg.dataset_name + "-"
+                         + date_str + ".h5";
+  final_cfg.output_path = final_cfg.output_dir + "/" + filename;
+
+  // Map I/O Skips
+  final_cfg.skip_save_index = cli_cfg.skip_save_index;
+  final_cfg.skip_save_results = cli_cfg.skip_save_results;
+
+  // 5. Merge CLI Overrides (if any were specifically passed)
+  if (app.count("--nmf")) final_cfg.nmf_type = cli_cfg.nmf_type;
+  if (app.count("--sample-size")) final_cfg.sample_size = cli_cfg.sample_size;
+  if (app.count("--n-components"))
+    final_cfg.n_components = cli_cfg.n_components;
+  if (app.count("--backend")) final_cfg.backend_type = cli_cfg.backend_type;
+  if (app.count("--m")) final_cfg.m = cli_cfg.m;
+  if (app.count("--nprobe")) final_cfg.nprobe = cli_cfg.nprobe;
+  if (app.count("--max-misses")) final_cfg.max_misses = cli_cfg.max_misses;
+  if (app.count("--drop-ratio")) final_cfg.drop_ratio = cli_cfg.drop_ratio;
+  if (app.count("--threads")) final_cfg.threads = cli_cfg.threads;
+  if (app.count("--w-sweeps")) final_cfg.w_sweeps = cli_cfg.w_sweeps;
+  if (app.count("--h-sweeps")) final_cfg.h_sweeps = cli_cfg.h_sweeps;
+  if (app.count("--tol")) final_cfg.tol = cli_cfg.tol;
+  if (app.count("--max-iter")) final_cfg.max_iter = cli_cfg.max_iter;
+  if (app.count("--random-state"))
+    final_cfg.random_state = cli_cfg.random_state;
+  if (app.count("--init")) final_cfg.init_method = cli_cfg.init_method;
+  if (app.count("--acol-p")) final_cfg.acol_p = cli_cfg.acol_p;
+  if (app.count("--debug")) final_cfg.debug = cli_cfg.debug;
+  if (app.count("--evaluate-recall"))
+    final_cfg.evaluate_recall = cli_cfg.evaluate_recall;
+
+  return run(final_cfg);
 }

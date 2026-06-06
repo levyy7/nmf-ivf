@@ -1,7 +1,6 @@
 #pragma once
 
 #include <iostream>
-#include <fstream>
 #include <omp.h>
 #include <Eigen/Sparse>
 #include <cblas.h>
@@ -21,12 +20,23 @@
 #include "utils/index_eval.h"
 
 struct RunConfig {
-  // Dataset
-  std::string dataset = "nq";
-  std::string data_dir = "data";
+  // ── New Execution Paths ──
+  std::string input_path;
+  std::string task_desc_path;
+  std::string output_dir;
+  std::string output_path;
+
+  // ── JSON Extracted Fields ──
+  std::string task_id = "task";
+  std::string dataset_name = "nq";
+  std::string h5_train_path = "train";
+  std::string h5_queries_path = "otest/queries";
+  std::string h5_gt_path = "otest/knns";
+
+  // ── Environment / Threads ──
   int threads = 8;
 
-  // NMF
+  // ── NMF ──
   std::string nmf_type = "mu";
   int n_components = 3000;
   double tol = 1e-4;
@@ -36,12 +46,13 @@ struct RunConfig {
   int acol_p = 5;
   bool debug = false;
   std::optional<int> random_state = std::nullopt;
+  int sample_size = 150000;
 
   // Only for HALS
   int w_sweeps = 1;
   int h_sweeps = 1;
 
-  // Index & Backend
+  // ── Index & Backend ──
   std::string backend_type = "adaptive";
   int m = 5000;
 
@@ -52,16 +63,14 @@ struct RunConfig {
   int max_misses = 80;
   float drop_ratio = 0.20f;
 
-  int sample_size = 150000;
+  // ── File I/O ──
+  bool skip_save_index = false;
+  bool skip_save_results = false;
 
-  // File I/O
-  std::string save_index_path = "output/index.h5";
-  std::string save_results_path = "output/index.h5";
-
-  // Eval
+  // ── Eval ──
   bool evaluate_recall = false;
   std::vector<int> recall_at = {10, 30, 100};
-  int eval_k = 100;
+  int eval_k = 30;
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,7 +84,7 @@ inline NMFBase::Init parseInitMethod(const std::string& s) {
 
 inline RunConfig preset(const std::string& name) {
   RunConfig cfg;
-  cfg.dataset = name;
+  cfg.dataset_name = name;
 
   if (name == "nq") {
     cfg.n_components = 3000;
@@ -84,7 +93,7 @@ inline RunConfig preset(const std::string& name) {
     cfg.nprobe = 20;
     cfg.max_misses = 80;
     cfg.drop_ratio = 0.20f;
-  } else if (name == "fiqa-dev") {
+  } else if (name == "fiqa-dev" || name == "fiqa-small") {
     cfg.n_components = 512;
     cfg.max_iter = 50;
     cfg.m = 500;
@@ -92,8 +101,8 @@ inline RunConfig preset(const std::string& name) {
     cfg.max_misses = 30;
     cfg.drop_ratio = 0.15f;
   } else {
-    std::cout << "No present for dataset " + name + ". Using defaults.\n";
-    return {};
+    std::cout << "[Preset] No preset for dataset '" << name <<
+        "'. Using defaults.\n";
   }
   return cfg;
 }
@@ -111,7 +120,11 @@ inline int run(const RunConfig& cfg) {
                                 : std::random_device{}();
 
     std::cout << "========================================\n"
-        << "Dataset       : " << cfg.dataset << "\n"
+        << "Task ID       : " << cfg.task_id << "\n"
+        << "Dataset Name  : " << cfg.dataset_name << "\n"
+        << "Input File    : " << cfg.input_path << "\n"
+        << "Output File   : " << cfg.output_path << "\n"
+        << "----------------------------------------\n"
         << "NMF Solver    : " << cfg.nmf_type << "\n"
         << "Components (k): " << cfg.n_components << "\n"
         << "Initialization: " << cfg.init_method << " (p=" << cfg.acol_p <<
@@ -123,14 +136,12 @@ inline int run(const RunConfig& cfg) {
         << "Seed          : " << seed << "\n"
         << "========================================\n";
 
-    // 2. Load Data
-    std::string data_path = cfg.data_dir + "/" + cfg.dataset + ".h5";
-    std::cout << "[IO] Loading datasets from " << data_path << "...\n";
-    HDF5Loader loader(data_path);
+    // 2. Load Data dynamically based on JSON
+    std::cout << "[IO] Loading dataset from " << cfg.input_path << "...\n";
+    HDF5Loader loader(cfg.input_path);
 
-    auto query = loader.loadSparse<float>("otest/queries");
-    auto gt = loader.loadGroundTruth("otest/knns");
-    auto train = loader.loadSparse<float>("train");
+    auto query = loader.loadSparse<float>(cfg.h5_queries_path);
+    auto train = loader.loadSparse<float>(cfg.h5_train_path);
 
     std::cout << "[IO] Train matrix: " << train.rows() << " x " << train.cols()
         << " (" << train.nonZeros() << " non-zeros)\n";
@@ -160,7 +171,6 @@ inline int run(const RunConfig& cfg) {
       mu_cfg.init_method = init_enum;
       mu_cfg.acol_p = cfg.acol_p;
       mu_cfg.compute_error = cfg.debug;
-      // Optionally set mu_cfg.l1_reg_H here if you added it!
       nmf_solver = std::make_unique<MuNMF>(mu_cfg);
     } else {
       throw std::invalid_argument("Unknown NMF solver: " + cfg.nmf_type);
@@ -191,57 +201,71 @@ inline int run(const RunConfig& cfg) {
     index.build(train, std::move(nmf_solver));
 
     // 6. Save Index (Optional)
-    if (!cfg.save_index_path.empty()) {
-      index.save_index(cfg.save_index_path);
+    if (!cfg.skip_save_index) {
+      std::cout << "[IO] Saving index to " << cfg.output_path << "\n";
+      index.save_index(cfg.output_path);
     }
 
     // 7. Search & Save Results (Optional)
-    if (!cfg.save_results_path.empty()) {
-      index.search_and_save(cfg.save_results_path, query, train, cfg.eval_k,
+    if (!cfg.skip_save_results) {
+      std::cout << "[IO] Saving results to " << cfg.output_path << "\n";
+      index.search_and_save(cfg.output_path, query, train, cfg.eval_k,
                             search_params.get());
     }
 
     // 8. Evaluation & Parameter Sweep
     if (cfg.evaluate_recall) {
-      std::vector<std::pair<std::string, std::unique_ptr<
-                              IVFBackend::SearchParams>>> sweep_configs;
-      std::string default_config_name;
-
-      if (cfg.backend_type == "naive") {
-        default_config_name = "nprobe=" + std::to_string(cfg.nprobe);
-        for (int np : {1, 2, 5, 10, 20, 50}) {
-          std::string name = "np=" + std::to_string(np);
-          sweep_configs.push_back(
-          {name,
-           std::make_unique<NaiveIVFBackend::SearchParams>(np, 1.0f)});
-        }
-      } else if (cfg.backend_type == "adaptive") {
-        default_config_name = "m=" + std::to_string(cfg.max_misses) + ", dr=" +
-                              std::to_string(cfg.drop_ratio);
-
-        // Sweep across the Pareto frontier we discovered earlier
-        std::vector<std::pair<int, float>> adapt_sweep = {
-            {60, 0.30f}, {80, 0.30f}, {80, 0.20f}, {100, 0.20f}, {120, 0.15f},
-            {100, 0.10f}
-        };
-        for (auto [m, dr] : adapt_sweep) {
-          char buffer[32];
-          snprintf(buffer, sizeof(buffer), "m=%d, dr=%.2f", m, dr);
-          sweep_configs.push_back(
-          {buffer,
-           std::make_unique<AdaptiveIVFBackend::SearchParams>(m, dr)});
-        }
+      Eigen::MatrixXi gt;
+      bool has_gt = true;
+      try {
+        gt = loader.loadGroundTruth(cfg.h5_gt_path);
+      } catch (...) {
+        std::cout << "[Eval] Warning: Cannot load GT from '" << cfg.h5_gt_path
+            << "'. Skipping evaluation step.\n";
+        has_gt = false;
       }
 
-      // Convert unique_ptr configurations to raw pointers for the evaluator
-      std::vector<std::pair<std::string, const IVFBackend::SearchParams*>>
-          sweep_ptrs;
-      for (const auto& conf : sweep_configs) {
-        sweep_ptrs.push_back({conf.first, conf.second.get()});
-      }
+      if (has_gt) {
+        std::vector<std::pair<std::string, std::unique_ptr<
+                                IVFBackend::SearchParams>>> sweep_configs;
+        std::string default_config_name;
 
-      evaluate_nmf_index(index, query, train, gt, cfg.recall_at, cfg.eval_k,
-                         default_config_name, search_params.get(), sweep_ptrs);
+        if (cfg.backend_type == "naive") {
+          default_config_name = "nprobe=" + std::to_string(cfg.nprobe);
+          for (int np : {1, 2, 5, 10, 20, 50}) {
+            std::string name = "np=" + std::to_string(np);
+            sweep_configs.push_back(
+            {name,
+             std::make_unique<NaiveIVFBackend::SearchParams>(np, 1.0f)});
+          }
+        } else if (cfg.backend_type == "adaptive") {
+          default_config_name = "m=" + std::to_string(cfg.max_misses) + ", dr="
+                                +
+                                std::to_string(cfg.drop_ratio);
+
+          std::vector<std::pair<int, float>> adapt_sweep = {
+              {60, 0.30f}, {80, 0.30f}, {80, 0.20f}, {100, 0.20f}, {120, 0.15f},
+              {100, 0.10f}
+          };
+          for (auto [m, dr] : adapt_sweep) {
+            char buffer[32];
+            snprintf(buffer, sizeof(buffer), "m=%d, dr=%.2f", m, dr);
+            sweep_configs.push_back(
+            {buffer,
+             std::make_unique<AdaptiveIVFBackend::SearchParams>(m, dr)});
+          }
+        }
+
+        std::vector<std::pair<std::string, const IVFBackend::SearchParams*>>
+            sweep_ptrs;
+        for (const auto& conf : sweep_configs) {
+          sweep_ptrs.push_back({conf.first, conf.second.get()});
+        }
+
+        evaluate_nmf_index(index, query, train, gt, cfg.recall_at, cfg.eval_k,
+                           default_config_name, search_params.get(),
+                           sweep_ptrs);
+      }
     }
   } catch (const std::exception& e) {
     std::cerr << "Fatal Error: " << e.what() << "\n";

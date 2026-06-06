@@ -4,6 +4,8 @@
 
 cmake-build-default
 build
-data/fiqa-dev.h5
-data/nq.h5
 output
+results
+
+data/*
+!data/task-3-spot-check/

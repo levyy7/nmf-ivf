@@ -25,9 +25,9 @@ jobs:
             --volume $(pwd)/data:/app/data:ro \
             --volume $(pwd)/results:/app/results:rw \
             nmf-ivf \
-            --dataset benchmark-dev-fiqa-small \
-            --data-dir /app/data/task-3-spot-check \
-            --save-results /app/results/task-3-spot-check/results.h5 \
+            --input /app/data/task-3-spot-check/benchmark-dev-fiqa-small.h5 \
+            --task-description /app/data/task-3-spot-check/config.json \
+            --output /app/results/task-3-spot-check/ \
             --no-save-index \
             --threads 2 --n-components 256 --max-iter 20
 
@@ -43,7 +43,7 @@ jobs:
         run: |
           echo "=== Evaluating Results ==="
           python eval.py \
-            --results results/task-3-spot-check/results.h5 \
+            --results results/task-3-spot-check/*.h5 \
             --gt data/task-3-spot-check/benchmark-dev-fiqa-small.h5 \
             --k 30 \
             --output results/task-3-spot-check/metrics.json
