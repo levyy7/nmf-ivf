@@ -149,8 +149,6 @@ inline int run(const RunConfig& cfg) {
       hals_cfg.init_method = init_enum;
       hals_cfg.acol_p = cfg.acol_p;
       hals_cfg.compute_error = cfg.debug;
-      hals_cfg.w_sweeps = cfg.w_sweeps;
-      hals_cfg.h_sweeps = cfg.h_sweeps;
       nmf_solver = std::make_unique<HalsNMF>(hals_cfg);
     } else if (cfg.nmf_type == "mu") {
       MuNMF::Config mu_cfg;
