@@ -51,8 +51,8 @@ int main() {
       cfg.random_state = static_cast<int>(seed);
 
       cfg.backend_type = "adaptive";
-      cfg.max_misses = 150;
-      cfg.drop_ratio = 0.3f;
+      cfg.max_misses = {150};
+      cfg.drop_ratio = {0.3f};
 
       // FIX 2: Match the metric used in your K-sweep
       cfg.recall_at = {30};
