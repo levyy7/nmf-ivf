@@ -44,7 +44,6 @@ int main() {
       cfg.eval_k = 30;
       cfg.threads = 8;
       cfg.debug = false;
-      cfg.evaluate_recall = false; // Evaluates natively in your run() function
 
       // 5. Apply experimental variables
       cfg.sample_size = ss;
@@ -54,8 +53,6 @@ int main() {
       cfg.max_misses = {150};
       cfg.drop_ratio = {0.3f};
 
-      // FIX 2: Match the metric used in your K-sweep
-      cfg.recall_at = {30};
       cfg.eval_k = 30;
 
       // 6. File I/O: Save ONLY the results, ignore the index
