@@ -46,6 +46,7 @@ jobs:
             --results results/task-3-spot-check/*.h5 \
             --gt data/task-3-spot-check/benchmark-dev-fiqa-small.h5 \
             --k 30 \
+            --target-recall 0.90 \
             --output results/task-3-spot-check/metrics.json
 
       - name: Upload Results Artifact
