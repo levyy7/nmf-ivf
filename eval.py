@@ -1,6 +1,7 @@
 import argparse
 import h5py
 import json
+import numpy as np
 import sys
 
 
@@ -16,7 +17,6 @@ def evaluate_single(result_path, gt_knns, k):
 
             metadata = {
                 "file": result_path,
-                "dataset": "fiqa-dev",
                 "k_evaluated": k,
                 "build_time_sec": float(f_res.attrs.get('buildtime', 0.0)),
                 "query_time_sec": float(f_res.attrs.get('querytime', 0.0)),
