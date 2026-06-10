@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bits/random.h>
+
 #include <vector>
 #include <memory>
 #include <string>
@@ -14,10 +16,14 @@ public:
   struct Config {
     int sample_size;
     bool verbose;
+    unsigned int random_state;
 
-    // Explicit constructor prevents Clangd default-member errors
-    Config(int s_val = 100000, bool v_val = true)
-      : sample_size(s_val), verbose(v_val) {
+    Config(int s_val = 100000,
+           bool v_val = true,
+           unsigned int r_val = std::random_device{}())
+      : sample_size(s_val),
+        verbose(v_val),
+        random_state(r_val) {
     }
   };
 

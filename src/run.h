@@ -102,6 +102,7 @@ inline int run(const RunConfig& cfg) {
     // 1. Environment Setup
     openblas_set_num_threads(cfg.threads);
     omp_set_num_threads(cfg.threads);
+    Eigen::setNbThreads(8);
 
     const unsigned int seed = cfg.random_state.has_value()
                                 ? static_cast<unsigned int>(*cfg.random_state)
@@ -176,7 +177,7 @@ inline int run(const RunConfig& cfg) {
     }
 
     // 5. Build Index
-    NMFIndex::Config idx_cfg(cfg.sample_size, true);
+    NMFIndex::Config idx_cfg(cfg.sample_size, true, seed);
     NMFIndex index(std::move(backend), idx_cfg);
     index.build(train, std::move(nmf_solver));
 

@@ -28,13 +28,14 @@ Mat NMFBase::fit_transform(const SpMat& X) {
   const int k = (cfg.n_components <= 0) ? X.cols() : cfg.n_components;
   n_components_ = k;
 
-  if (cfg.verbose)
+  if (cfg.verbose) {
     std::cout << "[init] method=" << initMethodName(cfg.init_method)
         << "  k=" << k
         << (cfg.init_method == Init::Acol
               ? "  acol_p=" + std::to_string(cfg.acol_p)
               : "")
         << "\n";
+  }
 
   auto t_init = std::chrono::high_resolution_clock::now();
   init(X, k, W_, H_);
@@ -46,12 +47,15 @@ Mat NMFBase::fit_transform(const SpMat& X) {
         << init_s << "s\n";
   }
 
-  // Reconstruction error right after init — useful to see how much
-  // the factorisation actually improves from the starting point.
-  if (cfg.verbose && cfg.compute_error) {
-    const double init_err = computeError(X, W_, H_);
-    std::cout << "[init] reconstruction_err=" << std::fixed
-        << std::setprecision(4) << init_err << "\n";
+  // 1. Gate the initial error computation
+  if (cfg.compute_error) {
+    reconstruction_err_ = computeError(X, W_, H_);
+    if (cfg.verbose) {
+      std::cout << "[init] reconstruction_err=" << std::fixed
+          << std::setprecision(4) << reconstruction_err_ << "\n";
+    }
+  } else {
+    reconstruction_err_ = -1.0; // Indicate it is uncomputed
   }
 
   double prev_err = std::numeric_limits<double>::infinity();
@@ -62,26 +66,31 @@ Mat NMFBase::fit_transform(const SpMat& X) {
 
     updateW(X, W_, H_);
     updateH(X, W_, H_);
-
-    reconstruction_err_ = computeError(X, W_, H_);
     n_iter_ = iter + 1;
+
+    if (cfg.compute_error) {
+      reconstruction_err_ = computeError(X, W_, H_);
+    }
 
     if (cfg.verbose) {
       auto now = std::chrono::high_resolution_clock::now();
       double iter_s = std::chrono::duration<double>(now - t_iter).count();
       double total_s = std::chrono::duration<double>(now - t_total).count();
 
-      std::cout << "[iter " << std::setw(3) << iter << "] "
-          << "err=" << std::fixed << std::setprecision(4) <<
-          reconstruction_err_;
+      std::cout << "[iter " << std::setw(3) << iter << "]";
 
-      if (cfg.compute_error && prev_err < std::numeric_limits<
-            double>::infinity()) {
-        const double improvement = prev_err - reconstruction_err_;
-        const double rel = improvement / std::max(prev_err, 1e-12);
-        std::cout << "  impr=" << std::setprecision(4) << improvement
-            << "  rel=" << std::scientific << std::setprecision(2) << rel
-            << std::defaultfloat;
+      // 3. Only print error stats if we are tracking them
+      if (cfg.compute_error) {
+        std::cout << " err=" << std::fixed << std::setprecision(4) <<
+            reconstruction_err_;
+
+        if (prev_err < std::numeric_limits<double>::infinity()) {
+          const double improvement = prev_err - reconstruction_err_;
+          const double rel = improvement / std::max(prev_err, 1e-12);
+          std::cout << "  impr=" << std::setprecision(4) << improvement
+              << "  rel=" << std::scientific << std::setprecision(2) << rel
+              << std::defaultfloat;
+        }
       }
 
       std::cout << "  iter=" << std::fixed << std::setprecision(2) << iter_s <<
@@ -90,19 +99,23 @@ Mat NMFBase::fit_transform(const SpMat& X) {
           << "\n";
     }
 
+    // 4. Gate convergence checking logic
     if (cfg.compute_error && cfg.tol > 0.0) {
       const double rel = std::abs(prev_err - reconstruction_err_) /
                          std::max(prev_err, 1e-12);
       if (rel <= cfg.tol) {
-        if (cfg.verbose)
+        if (cfg.verbose) {
           std::cout << "[converged] iter=" << iter
               << "  rel=" << std::scientific << rel
               << std::defaultfloat << "\n";
-        break;
+        }
+        break; // Break the loop on convergence
       }
     }
 
-    prev_err = reconstruction_err_;
+    if (cfg.compute_error) {
+      prev_err = reconstruction_err_;
+    }
   }
 
   if (cfg.verbose) {
@@ -110,9 +123,13 @@ Mat NMFBase::fit_transform(const SpMat& X) {
         std::chrono::high_resolution_clock::now() - t_total).count();
     std::cout << "[done] " << n_iter_ << " iters"
         << "  total=" << std::fixed << std::setprecision(1) << total_s << "s"
-        << "  avg=" << std::setprecision(2) << total_s / n_iter_ << "s/iter"
-        << "  final_err=" << std::setprecision(4) << reconstruction_err_ <<
-        "\n";
+        << "  avg=" << std::setprecision(2) << total_s / n_iter_ << "s/iter";
+
+    if (cfg.compute_error) {
+      std::cout << "  final_err=" << std::setprecision(4) <<
+          reconstruction_err_;
+    }
+    std::cout << "\n";
   }
 
   return W_;
@@ -181,7 +198,7 @@ double NMFBase::computeError(const SpMat& X, const Mat& W, const Mat& H) const {
 
 #pragma omp parallel for reduction(+:xsq, cross) schedule(dynamic, 64)
   for (int i = 0; i < X.outerSize(); ++i) {
-    const auto w_i = W.row(i);
+    const Eigen::VectorXf w_i = W.row(i);
     for (SpMat::InnerIterator it(X, i); it; ++it) {
       const float v = it.value();
       xsq += v * v;
@@ -193,11 +210,9 @@ double NMFBase::computeError(const SpMat& X, const Mat& W, const Mat& H) const {
 }
 
 double NMFBase::xMean(const SpMat& X) {
-  double s = 0.0;
-  for (int r = 0; r < X.outerSize(); ++r)
-    for (SpMat::InnerIterator it(X, r); it; ++it)
-      s += it.value();
+  double s = X.coeffs().sum();
+  double total_elements = static_cast<double>(X.rows()) * static_cast<double>(X.
+                            cols());
 
-  return s / std::max<std::ptrdiff_t>(
-             1, X.rows() * X.cols());
+  return s / std::max(1.0, total_elements);
 }

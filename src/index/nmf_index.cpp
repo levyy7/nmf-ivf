@@ -1,15 +1,15 @@
-#include "nmf_index.h"
+#include <string>
+#include <iostream>
+#include <random>
+#include <algorithm>
+#include <stdexcept>
+#include <chrono>
+#include <numeric>
 
-// Assume these are the definitions discussed previously
+#include "nmf_index.h"
 #include "utils/hdf5_loader.h"
 #include "utils/hdf5_writer.h"
 
-#include <algorithm>
-#include <stdexcept>
-#include <iostream>
-#include <chrono>
-#include <random>
-#include <numeric>
 
 #include "backend/adaptive.h"
 #include "backend/naive.h"
@@ -82,18 +82,43 @@ void NMFIndex::build(const SpMat& X, const std::unique_ptr<NMFBase>& nmf) {
 
   SpMat X_fit;
   if (X.rows() > cfg_.sample_size) {
-    std::vector<int> indices(X.rows());
-    std::iota(indices.begin(), indices.end(), 0);
+    // 1. Generate the population of row indices safely
+    std::vector<int> population(X.rows());
+    std::iota(population.begin(), population.end(), 0);
 
-    std::shuffle(indices.begin(), indices.end(),
-                 std::mt19937{std::random_device{}()});
+    // 2. Use C++17 std::sample with your explicit config seed
+    std::vector<int> sampled_indices;
+    sampled_indices.reserve(cfg_.sample_size);
 
-    indices.resize(cfg_.sample_size);
-    X_fit.resize(cfg_.sample_size, X.cols());
+    std::mt19937 rng(cfg_.random_state); // Guaranteed reproducibility
+
+    std::sample(population.begin(), population.end(),
+                std::back_inserter(sampled_indices),
+                cfg_.sample_size, rng);
+
+    // 3. Pre-allocate the exact memory needed for the Eigen Sparse Matrix
+    SpMat X_fit(cfg_.sample_size, X.cols());
+    std::vector<int> nnz_per_row(cfg_.sample_size);
 
     for (int i = 0; i < cfg_.sample_size; ++i) {
-      X_fit.row(i) = X.row(indices[i]);
+      // Count non-zeros in the target row to avoid dynamic reallocation
+      nnz_per_row[i] = X.row(sampled_indices[i]).nonZeros();
     }
+
+    // Tell Eigen exactly how much memory to allocate instantly
+    X_fit.reserve(nnz_per_row);
+
+    // 4. Safely and quickly insert the data using iterators
+    for (int i = 0; i < cfg_.sample_size; ++i) {
+      int original_row = sampled_indices[i];
+      for (SpMat::InnerIterator it(X, original_row); it; ++it) {
+        // .insert() is lightning fast because memory is already reserved
+        X_fit.insert(i, it.col()) = it.value();
+      }
+    }
+
+    // Compress the matrix to finalize the contiguous memory block
+    X_fit.makeCompressed();
 
     nmf->fit(X_fit);
   } else {
