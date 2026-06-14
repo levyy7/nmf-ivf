@@ -20,6 +20,7 @@ def evaluate_single(result_path, gt_knns, k):
                 "k_evaluated": k,
                 "build_time_sec": float(f_res.attrs.get('buildtime', 0.0)),
                 "query_time_sec": float(f_res.attrs.get('querytime', 0.0)),
+                "throughput": float(len(f_res.get('knns'))) / float(f_res.attrs.get('querytime', 0.0)),
                 "build_params": decode_attr(f_res.attrs.get('build_params')),
                 "search_params": decode_attr(f_res.attrs.get('search_params'))
             }
@@ -123,6 +124,7 @@ def main():
     print(f" File          : {best_run['file']}")
     print(f" Recall@{args.k}    : {best_run[f'recall@{args.k}']:.4f}")
     print(f" Query Time    : {best_run['query_time_sec']:.4f} s")
+    print(f" throughput    : {best_run['throughput']:.4f} query/sec")
     print(f" Build Params  : {best_run['build_params']}")
     print(f" Search Params : {best_run['search_params']}")
     print("========================================\n")
