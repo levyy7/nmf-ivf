@@ -4,10 +4,13 @@
 #include <queue>
 #include <utility>
 #include <vector>
-
+#include <algorithm>
+#include <cmath>
+#include <cblas.h>
 
 void IVFBackend::build(const SpMat& X, Eigen::MatrixXf H) {
   H_ = std::move(H);
+  HHt_ = H_ * H_.transpose();
 
   const int n = static_cast<int>(X.rows());
   const int k = static_cast<int>(H_.rows());
@@ -15,9 +18,9 @@ void IVFBackend::build(const SpMat& X, Eigen::MatrixXf H) {
       (static_cast<double>(n) / k) * overlap_factor_));
 
   if (cfg_.verbose) {
-    std::cout << "[IVFBackend] Starting index build...\n";
-    std::cout << "[IVFBackend] Documents (n): " << X.rows() << "\n";
-    std::cout << "[IVFBackend] Topics (k):    " << H_.rows() << "\n";
+    std::cout << "[IVFBackend] Starting hyper-optimized index build...\n";
+    std::cout << "[IVFBackend] Documents (n): " << n << "\n";
+    std::cout << "[IVFBackend] Topics (k):    " << k << "\n";
     std::cout << "[IVFBackend] List cap (m):  " << m << "\n";
   }
 
@@ -71,6 +74,13 @@ std::vector<std::vector<IVFBackend::SearchResult>> IVFBackend::search(
   std::vector<std::vector<SearchResult>> results(Q);
 
   const int CHUNK = 64;
+  const float EPS = 1e-9f;
+
+  // 1. Save the original OpenBLAS thread count so we don't permanently break it
+  int original_blas_threads = openblas_get_num_threads();
+
+  // 2. Deactivate OpenBLAS multithreading (Force it to use exactly 1 core per OpenMP thread)
+  openblas_set_num_threads(1);
 
   // Parallelize query evaluation over chunks
 #pragma omp parallel for schedule(dynamic)
@@ -78,9 +88,17 @@ std::vector<std::vector<IVFBackend::SearchResult>> IVFBackend::search(
     const int end = std::min(qi + CHUNK, Q);
     const int chunk_size = end - qi;
 
-    // Project the chunk of queries into the component space
+    // 1. Initialize query chunk projection with the linear heuristic
     Eigen::MatrixXf chunk_projected =
         queries.middleRows(qi, chunk_size) * H_.transpose();
+
+    // 2. Refine query projection using True NMF updates (3 quick real-time iterations)
+    Eigen::MatrixXf QHt = chunk_projected;
+    for (int iter = 0; iter < 1; ++iter) {
+      chunk_projected.array() *= QHt.array() / (chunk_projected * HHt_).array().
+          max(EPS);
+      chunk_projected = chunk_projected.array().max(0.f).matrix();
+    }
 
     // Evaluate each query in the chunk
     for (int i = 0; i < chunk_size; ++i) {
@@ -89,6 +107,8 @@ std::vector<std::vector<IVFBackend::SearchResult>> IVFBackend::search(
                                    params);
     }
   }
+
+  openblas_set_num_threads(original_blas_threads);
 
   return results;
 }

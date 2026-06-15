@@ -67,30 +67,32 @@ inline double stddev(const std::vector<double>& v) {
 inline double recall_at_k(const std::vector<int>& ranked,
                           const Eigen::VectorXi& gt_row,
                           int k) {
-  int hits = 0;
-  int valid_gt_count = 0;
-
-  // STRICT CAP: Only look at the top K elements of the ground truth!
+  // 1. Load ground truth into a set to mimic np.intersect1d
+  std::unordered_set<int> gt_set;
   const int gt_lim = std::min<int>(k, static_cast<int>(gt_row.size()));
 
   for (int i = 0; i < gt_lim; ++i) {
-    if (gt_row[i] >= 0) valid_gt_count++;
+    gt_set.insert(gt_row[i]); // Note: We removed the check for >= 0
   }
-  if (valid_gt_count == 0) return 0.0;
 
+  // 2. Load ranked results into a set to prevent duplicate counting
+  std::unordered_set<int> unique_ranked;
   const int lim = std::min<int>(k, static_cast<int>(ranked.size()));
 
   for (int i = 0; i < lim; ++i) {
-    // ONLY scan up to gt_lim
-    for (int j = 0; j < gt_lim; ++j) {
-      if (ranked[i] == gt_row[j]) {
-        ++hits;
-        break;
-      }
+    unique_ranked.insert(ranked[i]);
+  }
+
+  // 3. Count intersection
+  int hits = 0;
+  for (int id : unique_ranked) {
+    if (gt_set.find(id) != gt_set.end()) {
+      hits++;
     }
   }
 
-  return static_cast<double>(hits) / static_cast<double>(valid_gt_count);
+  // 4. Divide strictly by K, just like the gold standard
+  return static_cast<double>(hits) / static_cast<double>(k);
 }
 
 // ============================================================

@@ -148,7 +148,21 @@ NMFIndex::search(const SpMat& queries,
     throw std::runtime_error("NMFIndex::search — index is not built");
   }
 
-  return backend_->search(queries, X_docs, top_k, params);
+  int internal_k = std::max(100, top_k);
+
+  // Perform the search with the deeper queue
+  auto results = backend_->search(queries, X_docs, internal_k, params);
+
+  // Truncate the results back down to the requested top_k before returning
+  if (internal_k > top_k) {
+    for (auto& query_results : results) {
+      if (query_results.size() > static_cast<size_t>(top_k)) {
+        query_results.resize(top_k);
+      }
+    }
+  }
+
+  return results;
 }
 
 std::vector<std::vector<IVFBackend::SearchResult>>

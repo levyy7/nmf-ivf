@@ -38,6 +38,7 @@ public:
 
   IVFBackend(Eigen::MatrixXf H, Eigen::MatrixXi lists)
     : H_(std::move(H)), lists_(std::move(lists)), built_(true) {
+    HHt_ = H_ * H_.transpose();
   }
 
   void build(const SpMat& X, Eigen::MatrixXf H);
@@ -70,6 +71,7 @@ public:
 
 protected:
   Eigen::MatrixXf H_;
+  Eigen::MatrixXf HHt_;
   Eigen::MatrixXi lists_; // k x m matrix containing document IDs
   Config cfg_;
   bool built_ = false;
