@@ -13,6 +13,7 @@ RUN git clone https://github.com/microsoft/vcpkg /vcpkg && \
     /vcpkg/bootstrap-vcpkg.sh -disableMetrics
 
 ENV VCPKG_ROOT=/vcpkg
+ENV VCPKG_FORCE_SYSTEM_BINARIES=1
 
 WORKDIR /app
 COPY vcpkg.json .

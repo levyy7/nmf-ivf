@@ -108,22 +108,52 @@ inline int run(const RunConfig& cfg) {
                                 ? static_cast<unsigned int>(*cfg.random_state)
                                 : std::random_device{}();
 
-    std::cout << "========================================\n"
-        << "Task ID       : " << cfg.task_id << "\n"
-        << "Dataset Name  : " << cfg.dataset_name << "\n"
-        << "Input File    : " << cfg.input_path << "\n"
-        << "Output Base   : " << cfg.output_path << "\n"
-        << "----------------------------------------\n"
-        << "NMF Solver    : " << cfg.nmf_type << "\n"
-        << "Components (k): " << cfg.n_components << "\n"
-        << "Max Iter      : " << cfg.max_iter << "\n"
-        << "Initialization: " << cfg.init_method << " (p=" << cfg.acol_p <<
-        ")\n"
-        << "Backend Type  : " << cfg.backend_type << "\n"
-        << "Threads       : " << cfg.threads << " (OMP Max: " <<
-        omp_get_max_threads() << ")\n"
-        << "Seed          : " << seed << "\n"
-        << "========================================\n";
+    std::cout << "========================================================\n";
+    std::cout << " SYSTEM ENVIRONMENT\n";
+    std::cout << "========================================================\n";
+    std::cout << " Threads          : " << cfg.threads << " (OMP Max: " <<
+        omp_get_max_threads() << ")\n";
+    std::cout << " Eigen Threads    : " << Eigen::nbThreads() << "\n";
+    std::cout << " Seed             : " << seed << "\n\n";
+
+    std::cout << "========================================================\n";
+    std::cout << " DATASET & I/O\n";
+    std::cout << "========================================================\n";
+    std::cout << " Task ID          : " << cfg.task_id << "\n";
+    std::cout << " Dataset Name     : " << cfg.dataset_name << "\n";
+    std::cout << " Input File       : " << cfg.input_path << "\n";
+    std::cout << " Output Base      : " << cfg.output_path << "\n";
+    std::cout << " Train Path (H5)  : " << cfg.h5_train_path << "\n";
+    std::cout << " Query Path (H5)  : " << cfg.h5_queries_path << "\n\n";
+
+    std::cout << "========================================================\n";
+    std::cout << " NMF CONFIGURATION\n";
+    std::cout << "========================================================\n";
+    std::cout << " Solver           : " << cfg.nmf_type << "\n";
+    std::cout << " Components (k)   : " << cfg.n_components << "\n";
+    std::cout << " Max Iterations   : " << cfg.max_iter << "\n";
+    std::cout << " Tolerance        : " << cfg.tol << "\n";
+    std::cout << " Initialization   : " << cfg.init_method << " (p=" << cfg.
+        acol_p << ")\n";
+    std::cout << " Sample Size      : " << cfg.sample_size << "\n\n";
+
+    std::cout << "========================================================\n";
+    std::cout << " INDEX & SEARCH CONFIGURATION\n";
+    std::cout << "========================================================\n";
+    std::cout << " Backend Type     : " << cfg.backend_type << "\n";
+    std::cout << " List Capacity(m) : " << cfg.m << "\n";
+    std::cout << " Top-K Saved      : " << cfg.eval_k << "\n\n";
+
+    if (cfg.backend_type == "adaptive") {
+      std::cout << " Sweep Misses (m) : ";
+      for (int m : cfg.max_misses) std::cout << m << " ";
+      std::cout << "\n Sweep Drop (dr)  : ";
+      for (float dr : cfg.drop_ratio) std::cout << dr << " ";
+      std::cout << "\n";
+    } else if (cfg.backend_type == "naive") {
+      std::cout << " NProbe           : " << cfg.nprobe << "\n";
+    }
+    std::cout << "========================================================\n\n";
 
     // 2. Load Data
     std::cout << "[IO] Loading dataset from " << cfg.input_path << "...\n";
