@@ -1,6 +1,7 @@
 .idea
 .vscode
 .env
+.venv
 
 cmake-build-default
 build
